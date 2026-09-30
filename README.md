@@ -53,6 +53,13 @@ answer than any summary.
 ## Install
 
 ```console
+brew tap kevindurant735rocket-creator/tap
+brew install alibi
+```
+
+Or, with no package manager:
+
+```console
 curl -fsSL https://raw.githubusercontent.com/kevindurant735rocket-creator/alibi/main/install.sh | sh
 ```
 

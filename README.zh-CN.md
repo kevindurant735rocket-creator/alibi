@@ -35,6 +35,13 @@ $ alibi check .github/PULL_REQUEST.md
 ## 安装
 
 ```console
+brew tap kevindurant735rocket-creator/tap
+brew install alibi
+```
+
+或者不用包管理器：
+
+```console
 curl -fsSL https://raw.githubusercontent.com/kevindurant735rocket-creator/alibi/main/install.sh | sh
 ```
 
