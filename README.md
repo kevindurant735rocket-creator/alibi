@@ -48,10 +48,18 @@ summary of what it did, and the summary is the only account you get.
 Both are the same question — **is this claim true?** — and a diff is a stronger
 answer than any summary.
 
+[中文版](./README.zh-CN.md)
+
 ## Install
 
 ```console
-git clone https://github.com/<you>/alibi && cd alibi
+curl -fsSL https://raw.githubusercontent.com/kevindurant735rocket-creator/alibi/main/install.sh | sh
+```
+
+Or from a clone:
+
+```console
+git clone https://github.com/kevindurant735rocket-creator/alibi && cd alibi
 python3 -m alibi doctor      # Python 3.9+, nothing to install
 ```
 
