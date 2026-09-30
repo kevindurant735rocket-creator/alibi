@@ -50,6 +50,28 @@ answer than any summary.
 
 [中文版](./README.zh-CN.md)
 
+## See it work
+
+```console
+$ bash docs/self_audit.sh
+
+    1. VERIFIED     file_created
+       said     I created `demo_check.py` to give the self-audit a real diff to check.
+       diff     the diff adds demo_check.py
+    2. CONTRADICTED file_deleted
+       said     I removed `alibi_verify.py` to simplify the judging layer.
+       diff     the diff does not delete alibi_verify.py
+    3. UNVERIFIED   tests_pass
+       said     Tests pass.
+       diff     whether the suite passed is a CI fact, not something a diff can show
+
+  ✓ 2 verified   ✗ 1 contradicted   ? 1 unverified
+  exit code: 1
+```
+
+A throwaway repository, one real diff, and a description with one false claim
+in it. The diff settles it. [Full transcript.](docs/SELF_AUDIT.md)
+
 ## Install
 
 ```console

@@ -15,9 +15,10 @@ If a rule cannot be settled by something mechanical, return `UNVERIFIED`. Not
 ## Setting up
 
 ```bash
-git clone https://github.com/<you>/alibi && cd alibi
+git clone https://github.com/kevindurant735rocket-creator/alibi && cd alibi
 python3 -m unittest discover -s tests -v
 python3 -m alibi doctor
+bash docs/self_audit.sh      # the demo the README shows
 ```
 
 Python 3.9+, standard library only. A test enforces the zero-dependency rule —
