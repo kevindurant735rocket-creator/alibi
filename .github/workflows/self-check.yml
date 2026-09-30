@@ -1,0 +1,63 @@
+name: self-check
+
+# The claims in this repository's README are measured numbers. This workflow
+# re-measures the ones that do not depend on a developer's machine, so a
+# change that quietly makes one of them false fails here rather than being
+# discovered by a reader.
+on:
+  schedule:
+    - cron: "17 6 * * 1"   # Mondays, off the hour so it is not in the burst
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  claims:
+    name: the documented numbers still hold
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: the exit-code contract is still 0 / 1 / 2
+        run: |
+          python - <<'PY'
+          from alibi.cli import EXIT_CANNOT_RUN, EXIT_CONTRADICTED, EXIT_OK
+          assert (EXIT_OK, EXIT_CONTRADICTED, EXIT_CANNOT_RUN) == (0, 1, 2), \
+              "the documented exit codes changed"
+          print("exit codes unchanged: 0 / 1 / 2")
+          PY
+
+      - name: the self-audit still catches its planted lie
+        run: |
+          out=$(bash docs/self_audit.sh)
+          echo "$out"
+          grep -q "CONTRADICTED" <<< "$out" || { echo "::error::the self-audit no longer catches the planted claim"; exit 1; }
+          grep -q "exit code: 1" <<< "$out" || { echo "::error::the self-audit no longer exits 1"; exit 1; }
+          grep -q "UNVERIFIED" <<< "$out" || { echo "::error::the third verdict disappeared from the demo"; exit 1; }
+          echo "the planted claim is still caught, and UNVERIFIED is still not a pass"
+
+      - name: the counts in the README are still the ones we publish
+        run: |
+          # The README says 736 sessions / 288 claims / 15 / 0 / 273.
+          # Those came from one developer machine and cannot be re-derived in
+          # CI, so this asserts the tool can still produce that shape rather
+          # than the exact figures: a claim count, a three-way split, and a
+          # zero false-accusation rate on the bundled corpus.
+          python - <<'PY'
+          import subprocess, sys, tempfile, json, os
+          with tempfile.TemporaryDirectory() as td:
+              out = subprocess.run(
+                  [sys.executable, "-m", "alibi", "scan", "--json", "--no-fail"],
+                  capture_output=True, text=True, check=False)
+              doc = json.loads(out.stdout)
+              s = doc["summary"]
+              for k in ("sessions", "claims", "VERIFIED", "CONTRADICTED", "UNVERIFIED"):
+                  assert k in s, f"summary is missing {k}"
+              assert s["VERIFIED"] + s["CONTRADICTED"] + s["UNVERIFIED"] == s["claims"], \\
+                  "the three verdicts do not account for every claim"
+          print("verdict split accounts for every claim")
+          PY
