@@ -19,9 +19,45 @@ from __future__ import annotations
 
 import importlib
 import pkgutil
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Optional
+
+# One exit-code parser for every adapter. The previous arrangement had a copy in
+# each adapter file, and both searched the whole tool output for the FIRST
+# `exit N` they could find — which happily picked the number out of a sentence
+# like "see http://example.com/exit 42 docs".
+#
+# A real exit code is on its own line and ends that line. Anchoring to both ends,
+# scanning only the tail, and taking the LAST match is what keeps a passing run
+# from being read out of a log that merely mentions one.
+#
+# The separator is optional on purpose. Claude Code writes `Exit code 1` with no
+# colon; requiring one silently stopped alibi reading the marker the real agent
+# actually writes, which cost a true positive before it was noticed.
+_EXIT_ANCHORED = re.compile(r"^[^\n]{0,40}?\bexit(?:\s+code)?\s*[:=]?\s*(\d{1,3})\s*$", re.I)
+_TAIL_LINES = 25
+
+
+def exit_code_from_output(body: str) -> Optional[int]:
+    """Read an exit code out of a tool result, or None when there is not one.
+
+    None is load-bearing: a claim that depends on an exit code we could not read
+    becomes UNVERIFIED rather than a guess. Anchored lines that are not exit
+    codes — URLs, prose, diff output — are ignored.
+    """
+    if not body:
+        return None
+    found = None
+    for line in body.splitlines()[-_TAIL_LINES:]:
+        m = _EXIT_ANCHORED.match(line.strip())
+        if m:
+            try:
+                found = int(m.group(1))
+            except ValueError:
+                pass
+    return found
 
 
 @dataclass
@@ -32,6 +68,10 @@ class ToolCall:
     tool_input: dict = field(default_factory=dict)
     exit_code: Optional[int] = None
     output: str = ""
+    # Structured, agent-authored success flag. Preferred over anything scraped
+    # out of the output text: `is_error: true` is a field the agent set, not a
+    # number a regex happened to find somewhere in a log.
+    is_error: Optional[bool] = None
 
 
 @dataclass

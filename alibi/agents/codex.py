@@ -8,16 +8,16 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from pathlib import Path
 
-from . import Message, Session, ToolCall
+from . import Message, Session, ToolCall, exit_code_from_output
 
 NAME = "codex"
 SUMMARY = "OpenAI Codex — ~/.codex/sessions/**/*.jsonl"
 
 _ROOT = Path(os.environ.get("CODEX_HOME", Path.home() / ".codex")) / "sessions"
 
-_EXIT_RE = __import__("re").compile(r"exit(?:ed with)?(?:\s+code)?\s*[:=]?\s*(\d+)", __import__("re").I)
 
 
 def locate(explicit: str | None = None) -> list[Path]:
@@ -124,12 +124,7 @@ def parse(path: Path) -> Session:
                 body = json.dumps(body, ensure_ascii=False)
             body = body if isinstance(body, str) else ""
             call.output = body
-            m = _EXIT_RE.search(body)
-            if m:
-                try:
-                    call.exit_code = int(m.group(1))
-                except ValueError:
-                    pass
+            call.exit_code = exit_code_from_output(body)
 
     session.started_at = first_ts
     session.ended_at = last_ts

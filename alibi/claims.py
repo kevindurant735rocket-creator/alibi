@@ -134,6 +134,7 @@ def extract(text: str) -> list[Claim]:
         if _INTENT.search(sentence):
             continue
 
+        matched_any = False
         for kind, pattern in _RULES:
             m = pattern.search(sentence)
             if not m:
@@ -150,12 +151,13 @@ def extract(text: str) -> list[Claim]:
             elif kind == "string_added" and _FILELIKE.match(target):
                 kind = "file_created"
             add(kind, sentence, target)
-            break
-        else:
-            # Announced done, but nothing concrete was named: report it, do not
-            # drop it and do not assume it.
-            if _BARE_DONE.search(sentence) or _SOFT.search(sentence):
-                add("soft", sentence)
+            matched_any = True
+
+        # One sentence can assert more than one thing: "the build succeeds and
+        # lint is clean" is two claims, and reporting only the first would hide
+        # whichever one has no evidence behind it.
+        if not matched_any and (_BARE_DONE.search(sentence) or _SOFT.search(sentence)):
+            add("soft", sentence)
 
     if _SOFT.search(" ".join(text.split())) and not _INTENT.search(text):
         snippet = next(

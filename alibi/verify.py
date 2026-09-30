@@ -2,23 +2,31 @@
 
 Three verdicts, and the third one is the point of this tool:
 
-    VERIFIED      the working tree agrees with what the agent said
-    CONTRADICTED  the working tree disagrees
+    VERIFIED      the session and the working tree agree with what was said
+    CONTRADICTED  they disagree
     UNVERIFIED    alibi cannot settle it mechanically
 
 The rule that governs every function below: **absence of evidence is never
 evidence of presence.** A claim we cannot check is reported as UNVERIFIED, and
 UNVERIFIED never silently becomes a pass. If a future change makes that
 possible, this module is where it will happen, and it is meant to be obvious.
+
+The second rule, learned the hard way: **a coincidence is not evidence.** The
+first version asked "does utils.py exist?" and marked "I created utils.py"
+VERIFIED even when that file had been committed long before the session and the
+agent had never opened it. A file claim is settled by what THIS SESSION wrote
+(see writes.py), never by what happens to be on disk.
 """
 
 from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from pathlib import Path
 
 from .claims import Claim
 from .groundtruth import RepoFacts
+from .writes import session_writes, wrote
 
 VERIFIED = "VERIFIED"
 CONTRADICTED = "CONTRADICTED"
@@ -103,6 +111,12 @@ _READ_ONLY_VERB = re.compile(
     re.I,
 )
 
+# A chained or piped command without pipefail reports the shell's status, not the
+# runner's. `pytest || true` and `pytest 2>&1 | tail -30` both exit 0 no matter
+# what pytest did, and agents write both constantly.
+_MASKED = re.compile(r"\|\||\||;|&\s*$|set\s+\+e")
+_PIPEFAIL = re.compile(r"set\s+-o\s+pipefail|set\s+-C")
+
 
 def _leading_verb(cmd: str) -> str:
     """First real word of a command, skipping `cd X &&`, env assignments and pipes."""
@@ -173,27 +187,52 @@ def _verify_scoped_exit_claim(claim: Claim, facts: RepoFacts, session) -> Findin
             f"so the claim cannot be checked here",
         )
 
-    zero = [(c, cmd) for c, cmd in matched if c.exit_code == 0]
-    nonzero = [(c, cmd) for c, cmd in matched if c.exit_code not in (None, 0)]
-    unknown = [cmd for c, cmd in matched if c.exit_code is None]
-
-    if nonzero and not zero:
-        call, cmd = nonzero[0]
+    # A shell that absorbed the failure reports its own status, not the runner's.
+    # `pytest || true` and `pytest 2>&1 | tail -30` both exit 0 whatever pytest
+    # did, and those are two of the shapes agents write most often. Without
+    # pipefail the exit code is simply not evidence about the test suite.
+    masked = [
+        (c, cmd) for c, cmd in matched
+        if _MASKED.search(cmd) and not _PIPEFAIL.search(cmd)
+    ]
+    if masked:
+        call, cmd = masked[-1]
         return Finding(
             claim,
-            CONTRADICTED,
-            f"the {noun} command `{cmd[:110]}` exited {call.exit_code}, "
-            f"and no {noun} command in this session exited 0",
+            UNVERIFIED,
+            f"`{cmd[:100]}` is piped or chained without pipefail, so its exit "
+            f"{call.exit_code} is the shell's, not the {noun}'s",
         )
-    if zero:
-        call, cmd = zero[-1]
-        extra = f" (later runs: {len(nonzero)} failed)" if nonzero else ""
-        return Finding(claim, VERIFIED, f"`{cmd[:110]}` exited 0{extra}")
+
+    # "All tests pass" describes the end state, so the LAST matching run is the
+    # evidence. Accepting any green run let an early pass vouch for a suite that
+    # had since gone red — the evidence string said "(later runs: 1 failed)" and
+    # the verdict said VERIFIED, in the same breath.
+    call, cmd = matched[-1]
+
+    if call.exit_code is None:
+        # No exit code in the output. The agent's own structured flag is a
+        # better source than anything scraped from text, but only when the
+        # command is not chained — otherwise it describes the chain.
+        if call.is_error is True:
+            return Finding(claim, CONTRADICTED, f"the last {noun} command `{cmd[:100]}` was recorded as an error")
+        if call.is_error is False:
+            return Finding(claim, VERIFIED, f"the last {noun} command `{cmd[:100]}` succeeded (no exit code recorded)")
+        return Finding(
+            claim,
+            UNVERIFIED,
+            f"the last {noun} command `{cmd[:100]}` has neither an exit code nor a status flag",
+        )
+
+    if call.exit_code == 0:
+        earlier = " (an earlier run in this session failed)" if any(
+            c.exit_code not in (None, 0) for c, _ in matched[:-1]
+        ) else ""
+        return Finding(claim, VERIFIED, f"the last {noun} command `{cmd[:100]}` exited 0{earlier}")
     return Finding(
         claim,
-        UNVERIFIED,
-        f"the only {noun} command(s) in this session have no recorded exit code: "
-        f"{unknown[0][:90]}",
+        CONTRADICTED,
+        f"the last {noun} command `{cmd[:100]}` exited {call.exit_code}",
     )
 
 
@@ -213,13 +252,27 @@ def _verify_file_created(claim: Claim, facts: RepoFacts, session) -> Finding:
     path, why = _resolve(facts, claim.target)
     if path is None:
         return Finding(claim, UNVERIFIED, why)
-    if path.exists():
-        rel = path.relative_to(facts.root) if facts.root else path
-        marker = ""
-        if str(rel) in facts.untracked or str(rel) in facts.status:
-            marker = " and it is in the working tree diff"
-        return Finding(claim, VERIFIED, f"{rel} exists{marker}")
-    return Finding(claim, CONTRADICTED, f"{claim.target} does not exist in the working tree")
+
+    rel = claim.target.lstrip("./")
+    exists = path.exists()
+
+    if not exists:
+        return Finding(claim, CONTRADICTED, f"{claim.target} does not exist in the working tree")
+    if wrote(session, rel):
+        marker = ", and it shows up in the working tree diff" if (
+            rel in facts.untracked or rel in facts.status
+        ) else ""
+        return Finding(claim, VERIFIED, f"this session wrote {claim.target}{marker}, and the file is there")
+    # It exists, but this session contains no write to it — the file may predate
+    # the session entirely. "It exists" said nothing about whether this session
+    # put it there, and treating that as proof is what let alibi vouch for a
+    # claim it had no evidence for.
+    return Finding(
+        claim,
+        UNVERIFIED,
+        f"{claim.target} exists, but this session contains no write to it, so alibi "
+        f"cannot tell whether this session created it or found it already there",
+    )
 
 
 def _verify_file_deleted(claim: Claim, facts: RepoFacts, session) -> Finding:
@@ -228,15 +281,24 @@ def _verify_file_deleted(claim: Claim, facts: RepoFacts, session) -> Finding:
         return Finding(claim, UNVERIFIED, why)
     if not path.exists():
         return Finding(claim, VERIFIED, f"{claim.target} is gone")
-    return Finding(
-        claim,
-        CONTRADICTED,
-        f"{claim.target} still exists ({len(path.read_text(errors='replace').splitlines())} lines)",
-    )
+    # Describe the path without reading it. It may be a directory, and the
+    # uncaught IsADirectoryError used to exit 1 — the exact code alibi uses for
+    # "a claim was contradicted". A crash must never look like an accusation.
+    kind = "directory" if path.is_dir() else "file"
+    detail = ""
+    if wrote(session, claim.target.lstrip("./")):
+        detail = ", and this session wrote it rather than removing it"
+    return Finding(claim, CONTRADICTED, f"{claim.target} still exists as a {kind}{detail}")
 
 
 def _which_file(session, hint: str) -> str | None:
-    """Guess which file a literal-string claim is about, from the paths the agent touched."""
+    """Best guess at which file a literal-string claim is about.
+
+    Deliberately advisory. A guess that produces a verdict is how alibi accused
+    an honest agent: it really did delete TOKEN_LIMIT from parser.py, alibi
+    guessed an unrelated notes.log, and the truthful claim came back
+    CONTRADICTED. A guess only decides where to look — never what to conclude.
+    """
     touched = []
     for message in session.messages:
         for call in message.tool_calls:
@@ -244,45 +306,63 @@ def _which_file(session, hint: str) -> str | None:
                 value = call.tool_input.get(key)
                 if isinstance(value, str) and value:
                     touched.append(value)
-    if not touched:
+    tail = (hint or "").lower()
+    if not touched or not tail:
         return None
-    tail = hint.lower()
+    # Substring matching put "return", "self" and "test" into unrelated files.
+    # Require the literal to sit on a word boundary inside the file name.
+    rx = re.compile(r"(?:^|[^a-z0-9])" + re.escape(tail) + r"(?:[^a-z0-9]|$)", re.I)
     for path in touched:
-        if tail and tail in path.lower():
+        if rx.search(Path(path).name):
             return path
-    return touched[-1]
+    return None
 
 
 def _verify_string(claim: Claim, facts: RepoFacts, session, want_present: bool) -> Finding:
-    literal = claim.target
-    candidates = []
+    """Was a literal line added or removed, according to git?
+
+    The question "is the literal in the file now" is not evidence in either
+    direction. For an added line it is satisfied by a file that always had it;
+    for a removed line it is satisfied by any file that never had it. Both
+    produced a VERIFIED that meant nothing. `git diff -U0` says which lines
+    actually changed, so that is what this asks.
+    """
+    literal = claim.target.strip()
+    writes = session_writes(session)
+
+    candidates = list(writes)
     hint = _which_file(session, literal)
     if hint:
-        candidates.append(hint)
-    candidates.extend(sorted(facts.status) + sorted(facts.untracked))
+        candidates.insert(0, hint.lstrip("./"))
 
-    searched = []
+    saw_diff = False
     for rel in candidates:
-        p, _ = _resolve(facts, rel)
-        if p is None or not p.is_file():
+        rel = rel.lstrip("./")
+        if facts.abs(rel) is None:
             continue
-        content = facts.read(rel)
-        if content is None:
+        changed = facts.changed_lines(rel)
+        if not changed:
             continue
-        searched.append(rel)
-        present = literal in content
-        if present == want_present:
-            verb = "is present in" if want_present else "is gone from"
-            return Finding(claim, VERIFIED, f"{literal!r} {verb} {rel}")
-    if not searched:
+        added, removed = changed
+        saw_diff = True
+        if want_present and literal in added:
+            return Finding(claim, VERIFIED, f"git diff shows `{literal}` added to {rel}")
+        if (not want_present) and literal in removed:
+            return Finding(claim, VERIFIED, f"git diff shows `{literal}` removed from {rel}")
+
+    if saw_diff:
+        verb = "added" if want_present else "removed"
         return Finding(
             claim,
-            UNVERIFIED,
-            f"no readable file to check {literal!r} against; the session named no file path",
+            CONTRADICTED,
+            f"git diff shows no `{literal}` line being {verb} in any file this session wrote",
         )
-    where = ", ".join(searched[:3]) + ("…" if len(searched) > 3 else "")
-    state = "nowhere in" if want_present else "still present in"
-    return Finding(claim, CONTRADICTED, f"{literal!r} was not found {state} {where}")
+    return Finding(
+        claim,
+        UNVERIFIED,
+        f"no uncommitted diff for a file this session wrote mentions {literal!r}, "
+        f"so there is nothing to settle it against",
+    )
 
 
 def verify(claim: Claim, facts: RepoFacts, session) -> Finding:
@@ -310,7 +390,22 @@ def verify(claim: Claim, facts: RepoFacts, session) -> Finding:
 
 
 def verify_all(claims, facts: RepoFacts, session) -> list[Finding]:
-    return [verify(c, facts, session) for c in claims]
+    """Verify every claim. One bad claim must not take down the batch.
+
+    A crash used to propagate to main(), which exited 1 — the code alibi uses
+    for "a claim was contradicted". In CI that turns a bug into a false
+    accusation, which is the one failure mode this tool must never have.
+    """
+    findings = []
+    for claim in claims:
+        try:
+            findings.append(verify(claim, facts, session))
+        except Exception as exc:
+            findings.append(Finding(
+                claim, UNVERIFIED,
+                f"alibi could not check this claim ({type(exc).__name__}: {exc})",
+            ))
+    return findings
 
 
 def tally(findings: list[Finding]) -> dict[str, int]:

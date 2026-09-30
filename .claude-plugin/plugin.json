@@ -1,0 +1,20 @@
+{
+  "name": "alibi",
+  "description": "Check what an AI coding agent said it did against what actually changed in the working tree.",
+  "version": "0.1.0",
+  "author": {
+    "name": "alibi contributors"
+  },
+  "license": "MIT",
+  "homepage": "https://github.com/<owner>/alibi",
+  "keywords": [
+    "verification",
+    "audit",
+    "ai-agents",
+    "claude-code",
+    "codex",
+    "git",
+    "ci",
+    "receipts"
+  ]
+}

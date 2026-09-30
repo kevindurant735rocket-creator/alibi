@@ -32,10 +32,16 @@ class RepoFacts:
         """
         if self.root is None:
             return None
+        if not rel or "\x00" in rel:
+            return None
+        # A leading ~ is a home reference, not a path inside the repository.
+        # Left alone it would silently become a literal directory named "~".
+        if rel.startswith("~"):
+            return None
         candidate = (self.root / rel).resolve()
         try:
             candidate.relative_to(self.root.resolve())
-        except ValueError:
+        except (ValueError, OSError):
             return None
         return candidate
 
@@ -51,6 +57,38 @@ class RepoFacts:
             return p.read_text(errors="replace")
         except OSError:
             return None
+
+    def changed_lines(self, rel: str) -> tuple[set[str], set[str]] | None:
+        """(added, removed) line contents from `git diff -U0` for one path.
+
+        This is the only honest way to settle a "I added/removed the line X"
+        claim. Checking whether X is present in the file now is the mirror of
+        the file_created bug: "removed the line TOKEN_LIMIT" came back VERIFIED
+        because TOKEN_LIMIT happened not to be in the one file the session
+        touched, which says nothing about whether the agent removed it.
+
+        Returns None when git cannot speak — not a repo, untracked path, or the
+        change has already been committed — and the caller must then say
+        UNVERIFIED rather than guess.
+        """
+        if self.root is None:
+            return None
+        p = self.abs(rel)
+        if p is None:
+            return None
+        rc, out, _ = _git(["diff", "-U0", "--", str(p)], self.root)
+        if rc != 0 or not out.strip():
+            return None
+        added: set[str] = set()
+        removed: set[str] = set()
+        for line in out.splitlines():
+            if line.startswith("+++") or line.startswith("---"):
+                continue
+            if line.startswith("+"):
+                added.add(line[1:].strip())
+            elif line.startswith("-"):
+                removed.add(line[1:].strip())
+        return (added, removed)
 
 
 def _git(args: list[str], cwd: Path) -> tuple[int, str, str]:

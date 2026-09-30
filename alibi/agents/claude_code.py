@@ -8,9 +8,10 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from pathlib import Path
 
-from . import Message, Session, ToolCall
+from . import Message, Session, ToolCall, exit_code_from_output
 
 NAME = "claude_code"
 SUMMARY = "Claude Code — ~/.claude/projects/**/*.jsonl"
@@ -111,34 +112,14 @@ def parse(path: Path) -> Session:
                     body = b.get("content")
                     body = body if isinstance(body, str) else json.dumps(body, ensure_ascii=False)
                     call.output = body
-                    code = _exit_code_from_output(body)
+                    code = exit_code_from_output(body)
                     if code is not None:
                         call.exit_code = code
+                    if isinstance(b.get("is_error"), bool):
+                        call.is_error = b["is_error"]
             if text and not blocks:
                 session.messages.append(Message(role="user", text=text, timestamp=ts))
 
     session.started_at = first_ts
     session.ended_at = last_ts
     return session
-
-
-_EXIT_RE = __import__("re").compile(r"exit(?:ed with)?(?:\s+code)?\s*[:=]?\s*(\d+)", __import__("re").I)
-
-
-def _exit_code_from_output(body: str) -> int | None:
-    """Read an exit code out of a tool result.
-
-    Claude Code writes it as `Exit code: N`; the shell tool's own failures also
-    surface as `<command> failed with exit code N`. When neither marker is
-    present we do NOT guess: exit_code stays None and any claim that depends on
-    it becomes UNVERIFIED rather than VERIFIED.
-    """
-    if not body:
-        return None
-    m = _EXIT_RE.search(body)
-    if not m:
-        return None
-    try:
-        return int(m.group(1))
-    except ValueError:
-        return None

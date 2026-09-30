@@ -6,9 +6,13 @@
     alibi doctor          which agents alibi can see transcripts for
 
 Exit codes are the contract:
-    0  no claim was contradicted
+    0  alibi ran and nothing was contradicted
     1  at least one claim was contradicted
-    2  alibi could not run (bad arguments, no transcripts, not a git repo)
+    2  alibi could not run — bad arguments, no transcripts, or it crashed
+
+Note what is NOT in the contract: a crash exits 2, never 1. Exit 1 means alibi
+looked at something and disagreed with the agent, and that must never be
+something a bug can produce.
 """
 
 from __future__ import annotations
@@ -29,22 +33,39 @@ EXIT_CONTRADICTED = 1
 EXIT_CANNOT_RUN = 2
 
 
-def _load(args) -> tuple[list[Session], dict]:
-    """Locate transcripts, parse them, snapshot each session's working tree."""
+def _load(args) -> tuple[list[Session], dict, int]:
+    """Locate transcripts, parse them, snapshot each session's working tree.
+
+    Returns (sessions, results, unreadable). `unreadable` counts transcripts
+    that were located but could not be used. Dropping them silently is how an
+    agent that changes its transcript format turns alibi into a rubber stamp
+    that reports "nothing contradicted" forever.
+    """
     wanted = args.agent or None
     located = locate_all(wanted, args.transcript)
     if not located:
-        return [], {}
+        return [], {}, 0
 
     sessions: list[Session] = []
+    # A path counts as unreadable only if NO adapter could read it. With an
+    # explicit --transcript every adapter is offered the same file, and the ones
+    # that do not speak its format would otherwise each report it as broken.
+    parsed_paths: set = set()
+    attempted: set = set()
     for agent_id, paths in located:
         for path in paths:
-            if args.limit and len(sessions) >= args.limit:
+            # `--limit 0` means "no limit". Testing `if args.limit` treated 0 as
+            # falsy and silently audited every transcript instead.
+            if args.limit > 0 and len(sessions) >= args.limit:
                 break
+            attempted.add(path)
             session = parse_session(agent_id, path)
             if session is None or not session.messages:
                 continue
+            parsed_paths.add(path)
             sessions.append(session)
+
+    unreadable = len(attempted - parsed_paths)
 
     results: dict = {}
     # Many sessions share a working directory. Snapshot each repository once —
@@ -61,26 +82,33 @@ def _load(args) -> tuple[list[Session], dict]:
             "repo_error": facts.error,
             "findings": verify_all(extract_session(session), facts, session),
         }
-    return sessions, results
+    return sessions, results, unreadable
 
 
 def cmd_scan(args) -> int:
-    sessions, results = _load(args)
+    sessions, results, unreadable = _load(args)
     if not sessions:
         print("alibi: no agent sessions found.", file=sys.stderr)
         print("       Run `alibi doctor` to see where alibi looked.", file=sys.stderr)
         return EXIT_CANNOT_RUN
 
     if args.json:
-        print(render_json(sessions, results, __version__))
+        print(render_json(sessions, results, __version__, unreadable))
     elif args.receipt:
-        print(render_receipt(sessions, results))
+        print(render_receipt(sessions, results, unreadable=unreadable))
     else:
-        print(render_terminal(sessions, results, color=args.color, width=args.width))
+        print(render_terminal(sessions, results, color=args.color, width=args.width,
+                              unreadable=unreadable))
 
     contradicted = sum(
         1 for r in results.values() for f in r["findings"] if f.verdict == CONTRADICTED
     )
+    # A scan that could read nothing is not a clean scan. `--strict` makes that
+    # loud, because the default has to stay usable across a machine where most
+    # sessions are not in a repository at all.
+    if args.strict and unreadable:
+        print(f"alibi: {unreadable} transcript(s) could not be read", file=sys.stderr)
+        return EXIT_CANNOT_RUN
     return EXIT_CONTRADICTED if (contradicted and not args.no_fail) else EXIT_OK
 
 
@@ -88,11 +116,29 @@ def cmd_doctor(args) -> int:
     print("alibi doctor — which agents can alibi read right now\n")
     located = dict(locate_all(None, None))
     known = available()
-    for agent_id in known or ["(none found)"]:
+
+    # An adapter that fails to import was previously dropped from the listing
+    # entirely, so a broken adapter was indistinguishable from one that was never
+    # written. A missing capability should be visible, not silent.
+    from . import agents as pkg
+
+    broken = []
+    for module_name in pkg._module_names():
+        mod = pkg._try_import(module_name)
+        if mod is None:
+            broken.append((module_name, "import failed"))
+        elif not all(hasattr(mod, a) for a in ("NAME", "SUMMARY", "locate", "parse")):
+            missing = [a for a in ("NAME", "SUMMARY", "locate", "parse") if not hasattr(mod, a)]
+            broken.append((module_name, "missing " + ", ".join(missing)))
+
+    for agent_id in known or (["(none found)"] if not broken else []):
         paths = located.get(agent_id, [])
-        print(f"  {agent_id:<14} {'OK' if paths else 'no transcripts'}   {len(paths)} file(s)")
+        print(f"  {agent_id:<14} {'OK' if paths else 'no transcripts':<14}   {len(paths)} file(s)")
+    for module_name, why in broken:
+        print(f"  {module_name:<14} BROKEN         {why}", file=sys.stderr)
+
     if not known:
-        print("  no adapters loaded — is alibi/agents/ intact?", file=sys.stderr)
+        print("  no working adapters loaded — is alibi/agents/ intact?", file=sys.stderr)
         return EXIT_CANNOT_RUN
     print("\n  Adding an agent: drop one file in alibi/agents/ defining")
     print("  NAME, SUMMARY, locate() and parse(). Nothing else changes.")
@@ -110,10 +156,13 @@ def build_parser() -> argparse.ArgumentParser:
     scan = sub.add_parser("scan", help="audit agent sessions against the working tree")
     scan.add_argument("--agent", action="append", help="only this agent (repeatable)")
     scan.add_argument("--transcript", help="audit this transcript file or directory instead of the default locations")
-    scan.add_argument("--limit", type=int, default=20, help="max sessions to audit (default 20)")
+    scan.add_argument("--limit", type=int, default=20,
+                      help="max sessions to audit (default 20; 0 means no limit)")
     scan.add_argument("--json", action="store_true", help="machine readable output for CI")
     scan.add_argument("--receipt", action="store_true", help="markdown block to paste into a pull request")
     scan.add_argument("--no-fail", action="store_true", help="always exit 0, even with contradictions")
+    scan.add_argument("--strict", action="store_true",
+                      help="exit 2 if any located transcript could not be read")
     scan.add_argument("--color", choices=["auto", "always", "never"], default="auto")
     scan.add_argument("--width", type=int, default=0)
     scan.set_defaults(func=cmd_scan)
@@ -129,6 +178,12 @@ def main(argv: list[str] | None = None) -> int:
         return args.func(args)
     except KeyboardInterrupt:
         return 130
+    except Exception as exc:
+        # A crash must never come out as 1. Exit 1 means alibi checked something
+        # and disagreed with the agent; a traceback means alibi broke, and in CI
+        # those two look identical if the code is shared.
+        print(f"alibi: crashed ({type(exc).__name__}: {exc})", file=sys.stderr)
+        return EXIT_CANNOT_RUN
 
 
 if __name__ == "__main__":

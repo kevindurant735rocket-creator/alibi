@@ -9,7 +9,9 @@ from __future__ import annotations
 
 import json
 import shutil
+import sys
 from datetime import datetime, timezone
+from pathlib import Path
 
 from .verify import CONTRADICTED, UNVERIFIED, VERIFIED, Finding, tally
 
@@ -24,7 +26,7 @@ def _use_color(force: str) -> bool:
         return True
     if force == "never":
         return False
-    return shutil.get_terminal_size().columns > 0 and __import__("sys").stdout.isatty()
+    return sys.stdout.isatty()
 
 
 def _truncate(text: str, width: int) -> str:
@@ -34,7 +36,8 @@ def _truncate(text: str, width: int) -> str:
     return text[: max(0, width - 1)] + "…"
 
 
-def render_terminal(sessions: list, results: dict, color: str = "auto", width: int = 0) -> str:
+def render_terminal(sessions: list, results: dict, color: str = "auto", width: int = 0,
+                   unreadable: int = 0) -> str:
     """One block per session, then a total line."""
     use_color = _use_color(color)
     total_width = width or min(shutil.get_terminal_size().columns, 110)
@@ -78,6 +81,10 @@ def render_terminal(sessions: list, results: dict, color: str = "auto", width: i
             summary += "   (alibi judges the diff, not the intent)"
         out.append(summary)
 
+    if unreadable:
+        out.append("")
+        out.append(f"  {_DIM if use_color else ''}warning: {unreadable} located transcript(s) "
+                   f"could not be read and were not audited{_RESET if use_color else ''}")
     all_findings = [f for r in results.values() for f in r["findings"]]
     counts = tally(all_findings)
     out.append("")
@@ -89,18 +96,20 @@ def render_terminal(sessions: list, results: dict, color: str = "auto", width: i
 
 def _short(path) -> str:
     try:
-        return str(path).replace(str(__import__("pathlib").Path.home()), "~")
+        return str(path).replace(str(Path.home()), "~")
     except Exception:
         return str(path)
 
 
-def render_json(sessions: list, results: dict, version: str = "0.1.0") -> str:
+def render_json(sessions: list, results: dict, version: str = "0.1.0",
+                unreadable: int = 0) -> str:
     payload = {
         "tool": "alibi",
         "version": version,
         "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "summary": {
             "sessions": len(sessions),
+            "transcripts_unreadable": unreadable,
             "claims": sum(len(r["findings"]) for r in results.values()),
             **tally([f for r in results.values() for f in r["findings"]]),
         },
@@ -131,7 +140,8 @@ def render_json(sessions: list, results: dict, version: str = "0.1.0") -> str:
     return json.dumps(payload, indent=2, ensure_ascii=False)
 
 
-def render_receipt(sessions: list, results: dict, limit_per_session: int = 20) -> str:
+def render_receipt(sessions: list, results: dict, limit_per_session: int = 20,
+                    unreadable: int = 0) -> str:
     """Markdown block meant to be pasted under a pull request description."""
     all_findings = [f for r in results.values() for f in r["findings"]]
     counts = tally(all_findings)
@@ -140,7 +150,7 @@ def render_receipt(sessions: list, results: dict, limit_per_session: int = 20) -
     lines.append("")
     lines.append("### Claim check")
     lines.append("")
-    unparsed = sum(s.skipped_lines for s in sessions)
+    unparsed = sum(s.skipped_lines for s in sessions) + unreadable
     lines.append(f"`alibi` read {len(sessions)} agent session(s) and checked "
                  f"{len(all_findings)} completion claim(s) against the working tree.")
     if unparsed:

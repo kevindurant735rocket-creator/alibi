@@ -1,0 +1,105 @@
+# alibi
+
+> Your agent needs an alibi. alibi reads the session transcripts your AI coding
+> agent already leaves on disk, extracts every sentence where it said it
+> finished something, and checks each of those sentences against your git
+> working tree. Pure Python standard library plus git. No model call, no
+> account, no API key, no network, no third-party dependency. It never judges
+> intent: a claim it cannot settle mechanically is reported `UNVERIFIED`, and
+> `UNVERIFIED` is not a pass.
+
+## Run
+
+One command, no install, from a clone:
+
+```bash
+git clone https://github.com/<you>/alibi && cd alibi
+python3 -m alibi scan          # 3.9+, standard library only
+```
+
+`scan` audits the most recent sessions (default 20) and exits with the codes
+below. `python3 -m alibi doctor` lists which agents alibi can currently read,
+and `bash examples/demo.sh` rebuilds a planted contradiction in a throwaway git
+repo so you can watch the tool work without trusting anyone's transcript.
+
+## Exit codes
+
+The exit code is the contract; CI depends on it.
+
+- `0` — nothing was contradicted (unverified claims do not fail the build)
+- `1` — at least one claim was contradicted
+- `2` — alibi could not run: bad arguments, no transcripts found, or the
+  session's cwd is not inside a git repository
+
+## Verdict semantics
+
+- `VERIFIED` — the working tree agrees with what the agent said
+- `CONTRADICTED` — the working tree disagrees
+- `UNVERIFIED` — alibi cannot settle it mechanically. It is reported, never
+  silently upgraded to a pass, and never counted in the verified total.
+
+## Docs
+
+- [README.md](README.md): what alibi is, what it is not, the measured results
+  over 734 real sessions, and the four bugs that once made it accuse 17 claims
+  of which 0 were true.
+- [CONTRIBUTING.md](CONTRIBUTING.md): the one rule (never accuse an agent you
+  cannot prove), how to run the suite, and how to add a rule or an adapter.
+- [AGENTS.md](AGENTS.md): repository rules for coding agents, including the
+  invariant that everything unverifiable must stay `UNVERIFIED`.
+- [docs/agents/README.md](docs/agents/README.md): the extension contract —
+  adding support for another agent is one file in `alibi/agents/`.
+- [docs/agents/claude_code.md](docs/agents/claude_code.md): where Claude Code
+  keeps transcripts, the exact record shape, and the parsing traps.
+- [docs/agents/codex.md](docs/agents/codex.md): the same for OpenAI Codex
+  rollouts, including the `{timestamp, type, payload}` envelope and how tool
+  calls pair with their outputs by `call_id`.
+
+## Code
+
+- [alibi/cli.py](alibi/cli.py): argument parsing, the `scan` / `doctor`
+  commands, and the definition of exit codes 0 / 1 / 2.
+- [alibi/claims.py](alibi/claims.py): claim extraction. It only finds sentences
+  and never judges them; intent such as "now let me write X" is dropped before
+  any rule can fire.
+- [alibi/verify.py](alibi/verify.py): the only place a verdict is produced.
+  Seven decidable claim shapes; everything else returns `UNVERIFIED`. This is
+  the file to argue with.
+- [alibi/groundtruth.py](alibi/groundtruth.py): snapshots the git working tree
+  (`rev-parse`, `status --porcelain`) once per repository, and refuses to
+  resolve a claimed path outside that repository.
+- [alibi/report.py](alibi/report.py): terminal table, `--json` payload, and the
+  `--receipt` markdown block meant to be pasted into a pull request.
+- [alibi/agents/__init__.py](alibi/agents/__init__.py): the dataclasses
+  (`Session`, `Message`, `ToolCall`) and the four names every adapter must
+  define: `NAME`, `SUMMARY`, `locate()`, `parse()`.
+- [alibi/agents/claude_code.py](alibi/agents/claude_code.py): the reference
+  adapter, and the template to copy for a new agent.
+- [alibi/agents/codex.py](alibi/agents/codex.py): the OpenAI Codex adapter, and
+  the worked example of pairing `function_call` with `function_call_output`.
+
+## Tests and scripts
+
+- [tests/test_alibi.py](tests/test_alibi.py): the whole suite, 28 tests. It
+  enforces the zero-dependency rule and plants a contradicted claim, a
+  verified one, and a bare "Done." that must stay `UNVERIFIED`.
+- [tools/run_all.sh](tools/run_all.sh): everything CI runs, in one command —
+  unit tests, the standard-library-only check, the no-network check, the demo
+  transcript, and the CLI exit-code surface.
+- [examples/demo.sh](examples/demo.sh): builds a throwaway git repo, writes a
+  transcript in which the agent lies four ways, audits it, and prints the exit
+  code.
+
+## Optional
+
+- [pyproject.toml](pyproject.toml): packaging metadata for the `alibi-cli`
+  distribution and the `alibi` console script.
+
+## Notes
+
+- Measured on 734 real sessions: 257 completion claims found, 1 verified,
+  1 contradicted (a true positive), 255 unverified. The high unverified count
+  is the honest answer, not a defect — most completion sentences name no path,
+  no literal and no command, so there is nothing mechanical to check.
+- alibi reads files that already exist and writes nothing. It does not modify
+  your repository, your transcripts, or your git config.

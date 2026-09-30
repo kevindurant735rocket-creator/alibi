@@ -1,0 +1,56 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+# NOT "alibi": that name is taken on PyPI by SeldonIO's machine-learning
+# library. The distribution is alibi-cli; the import package and the CLI
+# command are both still `alibi`.
+name = "alibi-cli"
+version = "0.1.0"
+description = "Check what an AI coding agent said it did against what actually changed in your working tree."
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+authors = [{ name = "alibi contributors" }]
+keywords = [
+    "ai-agents",
+    "verification",
+    "audit",
+    "claude-code",
+    "codex",
+    "git",
+    "ci",
+    "developer-tools",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Quality Assurance",
+    "Topic :: Software Development :: Version Control :: Git",
+    "Topic :: Utilities",
+]
+
+# Deliberately empty. alibi is standard library plus the `git` binary, and the
+# test suite fails the build on the first third-party import anyone adds.
+dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/<owner>/alibi"
+Issues = "https://github.com/<owner>/alibi/issues"
+Source = "https://github.com/<owner>/alibi"
+
+[project.scripts]
+alibi = "alibi.cli:main"
+
+[tool.setuptools]
+packages = ["alibi", "alibi.agents"]
