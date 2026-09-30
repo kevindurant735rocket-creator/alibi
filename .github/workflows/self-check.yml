@@ -57,7 +57,7 @@ jobs:
               s = doc["summary"]
               for k in ("sessions", "claims", "VERIFIED", "CONTRADICTED", "UNVERIFIED"):
                   assert k in s, f"summary is missing {k}"
-              assert s["VERIFIED"] + s["CONTRADICTED"] + s["UNVERIFIED"] == s["claims"], \\
-                  "the three verdicts do not account for every claim"
+              total = s["VERIFIED"] + s["CONTRADICTED"] + s["UNVERIFIED"]
+              assert total == s["claims"], "the three verdicts do not account for every claim"
           print("verdict split accounts for every claim")
           PY
