@@ -19,6 +19,7 @@ Run with:  python3 -m unittest discover -s tests -v
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -896,3 +897,35 @@ class TestClaimScopeGuards(Sandbox):
             commands=[("docker cp vision.py c:/app/vision.py", "", 0)],
         )
         self.assertEqual([f.verdict for f in findings], [UNVERIFIED])
+
+
+class TestConsoleEncoding(Sandbox):
+    """The verdict glyphs must never cost us an exit code.
+
+    CI caught this on Windows: printing U+2713 to a cp1252 console raised
+    UnicodeEncodeError, which propagated out of cmd_scan and made main() exit
+    2. On the one platform where that matters most, a caught contradiction
+    would have gone from a red build to "alibi could not run".
+    """
+
+    def _scan(self, encoding: str, texts):
+        env = dict(os.environ, PYTHONIOENCODING=encoding)
+        td = Path(self.tmp.name) / f"enc_{encoding}"
+        td.mkdir(exist_ok=True)
+        tf = write_transcript(td / "s.jsonl", str(self.repo), texts)
+        return subprocess.run(
+            [sys.executable, "-m", "alibi", "scan", "--transcript", str(tf), "--color", "never"],
+            cwd=str(REPO_ROOT), capture_output=True, text=True, env=env, check=False,
+        )
+
+    def test_a_contradiction_still_fails_the_build_on_an_ascii_console(self):
+        for encoding in ("ascii", "cp1252"):
+            proc = self._scan(encoding, ["I created `ghost.py`."])
+            self.assertEqual(proc.returncode, 1,
+                             f"{encoding}: {proc.stdout}{proc.stderr}")
+            self.assertNotIn("Traceback", proc.stdout + proc.stderr)
+
+    def test_verdict_glyphs_fall_back_to_ascii(self):
+        proc = self._scan("ascii", ["I created `ghost.py`."])
+        self.assertNotIn("✓", proc.stdout)
+        self.assertIn("CONTRADICTED", proc.stdout)

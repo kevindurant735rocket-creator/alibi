@@ -16,6 +16,35 @@ from pathlib import Path
 from .verify import CONTRADICTED, UNVERIFIED, VERIFIED, Finding, tally
 
 _MARK = {VERIFIED: "✓", CONTRADICTED: "✗", UNVERIFIED: "?"}
+
+
+def _safe_mark(verdict: str) -> str:
+    """The verdict glyph, or an ASCII stand-in when the console cannot encode it."""
+    mark = _MARK[verdict]
+    encoding = getattr(sys.stdout, "encoding", None) or "ascii"
+    try:
+        mark.encode(encoding)
+    except (UnicodeEncodeError, LookupError):
+        return {"VERIFIED": "ok", "CONTRADICTED": "XX", "UNVERIFIED": "??"}[verdict]
+    return mark
+
+
+def _safe_print(text: str = "") -> None:
+    """Print, surviving a console that cannot encode what we want to show.
+
+    The verdict marks are U+2713 and U+2717. On a Windows console with the
+    default code page, printing one raises UnicodeEncodeError — and a
+    UnicodeEncodeError inside cmd_scan propagates to main(), which exits 2. That
+    is a crash wearing the exit code that means "could not run", on the one
+    platform where a wrong exit code silently turns a caught contradiction into a
+    green build. Losing a glyph is a fair trade for a correct exit code.
+    """
+    try:
+        print(text)
+    except UnicodeEncodeError:
+        encoding = getattr(sys.stdout, "encoding", None) or "ascii"
+        print(text.encode(encoding, errors="replace").decode(encoding, errors="replace"))
+
 _COLOR = {VERIFIED: "\033[32m", CONTRADICTED: "\033[31m", UNVERIFIED: "\033[33m"}
 _RESET = "\033[0m"
 _DIM = "\033[2m"
@@ -33,7 +62,7 @@ def _truncate(text: str, width: int) -> str:
     text = " ".join(str(text).split())
     if len(text) <= width:
         return text
-    return text[: max(0, width - 1)] + "…"
+    return text[: max(0, width - 3)] + "..."
 
 
 def render_terminal(sessions: list, results: dict, color: str = "auto", width: int = 0,
@@ -69,9 +98,9 @@ def render_terminal(sessions: list, results: dict, color: str = "auto", width: i
             out.append(f"       tree     {_truncate(finding.evidence, claim_w + 16)}")
 
         summary = (
-            f"  {_MARK[VERIFIED]} {counts[VERIFIED]} verified   "
-            f"{_MARK[CONTRADICTED]} {counts[CONTRADICTED]} contradicted   "
-            f"{_MARK[UNVERIFIED]} {counts[UNVERIFIED]} unverified"
+            f"  {_safe_mark(VERIFIED)} {counts[VERIFIED]} verified   "
+            f"{_safe_mark(CONTRADICTED)} {counts[CONTRADICTED]} contradicted   "
+            f"{_safe_mark(UNVERIFIED)} {counts[UNVERIFIED]} unverified"
         )
         if use_color:
             summary += (
@@ -195,3 +224,31 @@ def render_receipt(sessions: list, results: dict, limit_per_session: int = 20,
 
 def _md(text: str) -> str:
     return " ".join(str(text).split()).replace("|", "\\|")
+
+
+def _safe_mark(verdict: str) -> str:
+    """The verdict glyph, or an ASCII stand-in when the console cannot encode it."""
+    mark = _MARK[verdict]
+    encoding = getattr(sys.stdout, "encoding", None) or "ascii"
+    try:
+        mark.encode(encoding)
+    except (UnicodeEncodeError, LookupError):
+        return {"VERIFIED": "ok", "CONTRADICTED": "XX", "UNVERIFIED": "??"}[verdict]
+    return mark
+
+
+def _safe_print(text: str = "") -> None:
+    """Print, surviving a console that cannot encode what we want to show.
+
+    The verdict marks are U+2713 and U+2717. On a Windows console with the
+    default code page, printing one raises UnicodeEncodeError — and a
+    UnicodeEncodeError inside cmd_scan propagates to main(), which exits 2. That
+    is a crash wearing the exit code that means "could not run", on the one
+    platform where a wrong exit code silently turns a caught contradiction into a
+    green build. Losing a glyph is a fair trade for a correct exit code.
+    """
+    try:
+        print(text)
+    except UnicodeEncodeError:
+        encoding = getattr(sys.stdout, "encoding", None) or "ascii"
+        print(text.encode(encoding, errors="replace").decode(encoding, errors="replace"))

@@ -30,6 +30,21 @@ from .groundtruth import collect
 from .report import render_json, render_receipt, render_terminal
 from .verify import CONTRADICTED, tally, verify_all
 
+def _say(text: str = "", file=None) -> None:
+    """Print something whose exit code must not depend on the console's code page.
+
+    stdout and stderr are encoded differently on Windows, so the fallback looks
+    up whichever stream it is actually writing to. Replacing a glyph is a fair
+    trade; turning a caught contradiction into "could not run" is not.
+    """
+    stream = file or sys.stdout
+    try:
+        print(text, file=file)
+    except UnicodeEncodeError:
+        enc = getattr(stream, "encoding", None) or "ascii"
+        stream.write(text.encode(enc, errors="replace").decode(enc, errors="replace") + "\n")
+
+
 EXIT_OK = 0
 EXIT_CONTRADICTED = 1
 EXIT_CANNOT_RUN = 2
@@ -95,11 +110,11 @@ def cmd_scan(args) -> int:
         return EXIT_CANNOT_RUN
 
     if args.json:
-        print(render_json(sessions, results, __version__, unreadable))
+        _say(render_json(sessions, results, __version__, unreadable))
     elif args.receipt:
-        print(render_receipt(sessions, results, unreadable=unreadable))
+        _say(render_receipt(sessions, results, unreadable=unreadable))
     else:
-        print(render_terminal(sessions, results, color=args.color, width=args.width,
+        _say(render_terminal(sessions, results, color=args.color, width=args.width,
                               unreadable=unreadable))
 
     contradicted = sum(
@@ -129,11 +144,11 @@ def cmd_check(args) -> int:
     findings = verify_description(text, diff)
 
     if args.json:
-        print(render_description_json(text, findings, diff))
+        _say(render_description_json(text, findings, diff))
     elif args.receipt:
-        print(render_description_receipt(findings, diff))
+        _say(render_description_receipt(findings, diff))
     else:
-        print(render_description_terminal(text, findings, diff, args.color))
+        _say(render_description_terminal(text, findings, diff, args.color))
 
     contradicted = sum(1 for f in findings if f.verdict == CONTRADICTED)
     if args.strict and not diff.available:
@@ -143,7 +158,7 @@ def cmd_check(args) -> int:
 
 
 def cmd_doctor(args) -> int:
-    print("alibi doctor — which agents can alibi read right now\n")
+    _say("alibi doctor — which agents can alibi read right now\n")
     located = dict(locate_all(None, None))
     known = available()
 
@@ -163,9 +178,9 @@ def cmd_doctor(args) -> int:
 
     for agent_id in known or (["(none found)"] if not broken else []):
         paths = located.get(agent_id, [])
-        print(f"  {agent_id:<14} {'OK' if paths else 'no transcripts':<14}   {len(paths)} file(s)")
+        _say(f"  {agent_id:<14} {'OK' if paths else 'no transcripts':<14}   {len(paths)} file(s)")
     for module_name, why in broken:
-        print(f"  {module_name:<14} BROKEN         {why}", file=sys.stderr)
+        _say(f"  {module_name:<14} BROKEN         {why}", file=sys.stderr)
 
     if not known:
         print("  no working adapters loaded — is alibi/agents/ intact?", file=sys.stderr)
