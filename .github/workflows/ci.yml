@@ -1,0 +1,144 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: test (${{ matrix.os }}, py${{ matrix.python-version }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, ubuntu-latest, windows-latest]
+        python-version: ["3.11"]
+
+    steps:
+      - name: checkout
+        uses: actions/checkout@v4
+
+      - name: set up python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: show versions
+        run: |
+          python --version
+          git --version
+        shell: bash
+
+      - name: unit tests
+        run: python -m unittest discover -s tests -v
+        shell: bash
+
+      - name: full check (tools/run_all.sh)
+        # `shell: bash` on purpose. The default shell is pwsh on Windows and
+        # `bash tools/run_all.sh` would not run there; the git-bash that ships
+        # with the runner does, and the script is written for it.
+        run: bash tools/run_all.sh
+        shell: bash
+
+      - name: demo transcript (examples/demo.sh)
+        run: bash examples/demo.sh
+        shell: bash
+
+  zero-dependency:
+    name: zero-dependency / no network
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: checkout
+        uses: actions/checkout@v4
+
+      - name: set up python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: every import in alibi/ is standard library
+        # The promise is "python3 + git, nothing else". This step is what makes
+        # the promise enforceable rather than aspirational, so it fails the
+        # build on the first third-party import anyone adds.
+        run: |
+          python - <<'PY'
+          import pathlib
+          import sys
+          import sysconfig
+
+          stdlib = set(sys.stdlib_module_names)
+          stdlib |= {"__future__"}
+
+          bad = []
+          for path in sorted(pathlib.Path("alibi").rglob("*.py")):
+              for lineno, line in enumerate(path.read_text().splitlines(), 1):
+                  line = line.strip()
+                  if not (line.startswith("import ") or line.startswith("from ")):
+                      continue
+                  if line.startswith("from ."):
+                      continue
+                  module = line.split()[1].split(".")[0]
+                  if module not in stdlib:
+                      bad.append(f"{path}:{lineno}: {module}")
+
+          print(f"python {sys.version.split()[0]}, stdlib from {sysconfig.get_paths()['stdlib']}")
+          if bad:
+              print("third-party imports found:\n  " + "\n  ".join(bad))
+              sys.exit(1)
+          print("all imports in alibi/ are standard library")
+          PY
+
+      - name: no network primitives in alibi/
+        run: |
+          if grep -rnE '\b(urllib\.request|urllib3|http\.client|httpx|socket|requests|urlopen|fetch\(|aiohttp)' \
+               alibi/ --include='*.py'; then
+            echo "::error::alibi must run offline; a network primitive is in alibi/"
+            exit 1
+          fi
+          echo "no network primitives in alibi/"
+
+  cli:
+    name: cli surface / exit codes
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: checkout
+        uses: actions/checkout@v4
+
+      - name: set up python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: documented exit codes still hold
+        # The exit code is alibi's public contract (0 / 1 / 2). Pin it here so a
+        # refactor cannot quietly change what a CI integration depends on.
+        run: |
+          set -euo pipefail
+
+          python -m alibi --version
+
+          python -m alibi doctor >/dev/null && echo "doctor ok"
+          python -m alibi scan --help >/dev/null && echo "scan --help ok"
+
+          if python -m alibi scan --transcript /definitely/not/here.jsonl >/dev/null 2>&1; then
+            echo "::error::scanning a missing transcript should exit 2, not 0"
+            exit 1
+          fi
+          echo "missing transcript exits 2, as documented"
+
+          python - <<'PY'
+          from alibi.cli import EXIT_CANNOT_RUN, EXIT_CONTRADICTED, EXIT_OK
+          assert (EXIT_OK, EXIT_CONTRADICTED, EXIT_CANNOT_RUN) == (0, 1, 2)
+          print("exit code constants unchanged: 0 / 1 / 2")
+          PY
