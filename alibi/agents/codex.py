@@ -66,6 +66,7 @@ def parse(path: Path) -> Session:
     first_ts = last_ts = ""
     # call_id -> ToolCall, so function_call_output can attach the exit code
     pending: dict[str, ToolCall] = {}
+    order = 0
 
     for line in Path(path).read_text(errors="replace").splitlines():
         line = line.strip()
@@ -109,6 +110,8 @@ def parse(path: Path) -> Session:
                 name=str(payload.get("name", "")),
                 tool_input=_parse_args(payload.get("arguments")),
             )
+            order += 1
+            call.at = order
             cid = payload.get("call_id")
             if cid:
                 pending[cid] = call

@@ -61,6 +61,7 @@ def parse(path: Path) -> Session:
     session = Session(agent=NAME, path=Path(path))
     # tool_use_id -> ToolCall, so a following tool_result can attach its exit code
     pending: dict[str, ToolCall] = {}
+    order = 0
     first_ts = last_ts = ""
 
     for line in Path(path).read_text(errors="replace").splitlines():
@@ -91,6 +92,8 @@ def parse(path: Path) -> Session:
             text = "\n".join(b.get("text", "") for b in blocks if b.get("type") == "text").strip()
             calls = _tool_calls(blocks)
             for c in calls:
+                order += 1
+                c.at = order
                 block_id = next(
                     (b.get("id") for b in blocks if b.get("type") == "tool_use" and b.get("input") is c.tool_input),
                     None,

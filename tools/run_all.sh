@@ -1,21 +1,24 @@
 #!/usr/bin/env bash
 # Everything CI runs, in one command. Exits nonzero on the first failure.
 set -euo pipefail
-cd "$(dirname "$0")/.."
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+cd "$ROOT"
 
 # Windows' git-bash usually ships `python` and not `python3`, so the obvious
 # spelling of this script fails there for a reason that has nothing to do with
 # the code under test.
 PY=python3
 command -v "$PY" >/dev/null 2>&1 || PY=python
+# One interpreter for every step. Checks below cd into throwaway repos,
+# so this must not be a relative command that depends on staying put.
 
 fail=0
 step() { printf '\n=== %s\n' "$1"; }
 
-step "1/5 unit tests"
+step "1/6 unit tests"
 "$PY" -m unittest discover -s tests 2>&1 | tail -4
 
-step "2/5 standard library only"
+step "2/6 standard library only"
 if "$PY" - <<'PY'
 import sys, pathlib
 # sys.stdlib_module_names is authoritative per interpreter, so this check does
@@ -42,7 +45,7 @@ print(f"all imports are standard library (python {sys.version.split()[0]})")
 PY
 then :; else fail=1; fi
 
-step "3/5 no network calls in source"
+step "3/6 no network calls in source"
 if grep -rnE '\b(urllib\.request|http\.client|socket|requests|urlopen|fetch\()' alibi/ --include='*.py'; then
   echo "FAIL: source contains a network call; alibi must work offline"
   fail=1
@@ -50,7 +53,7 @@ else
   echo "no network primitives found in alibi/"
 fi
 
-step "4/5 demo transcript"
+step "4/6 demo transcript"
 # Not `demo.sh | grep -q …`: under pipefail, grep -q closes the pipe on its
 # first match, the demo dies of SIGPIPE, and the pipeline reports 141 — a
 # failure that looks exactly like a missing catch.
@@ -64,7 +67,7 @@ else
   fail=1
 fi
 
-step "5/5 CLI surface"
+step "5/6 CLI surface"
 "$PY" -m alibi --version
 "$PY" -m alibi doctor >/dev/null && echo "doctor ok"
 "$PY" -m alibi scan --help >/dev/null && echo "scan --help ok"
@@ -100,6 +103,28 @@ if printf '%s' "$crash_out" | grep -q "Traceback"; then
 else
   echo "a directory-shaped path is handled, no traceback (exit $crash_rc)"
 fi
+
+step "6/6 alibi check against a real diff"
+desc_probe=$(mktemp -d)
+mkdir -p "$desc_probe/repo"
+( cd "$desc_probe/repo" && git init -q \
+  && git config user.email t@e.c && git config user.name t \
+  && echo x > f.py && git add -A && git commit -qm i )
+printf 'brand_new = 1\n' > "$desc_probe/repo/added.py"
+cat > "$desc_probe/pr.md" <<'MD'
+## What this PR does
+I created `added.py`.
+I removed `f.py` to simplify things.
+MD
+if ( cd "$desc_probe/repo" && PYTHONPATH="$ROOT" "$PY" -m alibi check ../pr.md --color never >../out.txt 2>&1 ); then
+  echo "FAIL: a description claiming a deletion the diff does not make should exit 1"
+  fail=1
+else
+  grep -q "CONTRADICTED" "$desc_probe/out.txt" \
+    && echo "alibi check contradicted a false deletion claim and exited 1" \
+    || { echo "FAIL: alibi check did not contradict"; cat "$desc_probe/out.txt"; fail=1; }
+fi
+rm -rf "$desc_probe"
 
 printf '\n'
 if [ "$fail" -eq 0 ]; then

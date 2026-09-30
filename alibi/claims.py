@@ -18,7 +18,7 @@ this for clarity" has made a claim. alibi reports that it cannot check it.
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 
 @dataclass(frozen=True)
@@ -28,6 +28,10 @@ class Claim:
     text: str  # the sentence the agent said
     target: str = ""  # the path or literal string, when the claim names one
     line: int = 0  # 1-based index within the assistant text, for reporting
+    # Position in the session. A session can contain several test claims, and
+    # judging all of them against one global "last test command" handed one
+    # command's result to claims it had nothing to do with.
+    at: int = 0
 
     @property
     def decidable(self) -> bool:
@@ -35,9 +39,19 @@ class Claim:
 
 
 # A path-looking token: foo.py  src/a/b.ts  ./x  /abs/path  "some dir/file"
-_PATH = r"[`\"'‘“]?(?:\.{0,2}/)?[\w.\-]+(?:/[\w.\-]+)+\.[A-Za-z0-9]+[`\"'’”]?|[\w.\-]+\.(?:py|js|ts|tsx|jsx|go|rs|rb|java|kt|swift|c|h|cc|cpp|hpp|md|txt|json|ya?ml|toml|sh|zsh|cfg|ini|html|css|sql)[`\"'’”]?"
+# A path-looking token: foo.py  src/a/b.ts  ./x  /abs/path  "some dir/file"
+#
+# The trailing `\b` and the longest-extension-first order are both load-bearing.
+# Without them the alternation tried `js` before `json`, so `verify.json`
+# matched as `verify.js`, `replay.html` as `replay.h`, and alibi produced a
+# CONTRADICTED against files that never had those names. Four of the fifteen
+# contradictions on real transcripts were this one regex.
+_PATH_EXT = (r"(?:ya?ml|toml|json|html|css|tsx|jsx|mjs|cjs|swift|java|"
+             r"cpp|cc|hpp|py|js|ts|go|rs|rb|kt|sh|zsh|cfg|ini|sql|md|txt)")
+_PATH = (r"[`\"'‘“]?(?:\.{0,2}/)?[\w.\-]+(?:/[\w.\-]+)+\." + _PATH_EXT + r"\b[`\"'’”]?"
+         r"|[\w.\-]+\." + _PATH_EXT + r"\b[`\"'’”]?")
 _QUOTED = r"[`\"'‘“]([^`\"'‘’“”\n]{2,120})[`\"'‘’”]"
-_FILELIKE = re.compile(r"^[\w.\-/]+\.(?:py|js|ts|tsx|jsx|mjs|cjs|go|rs|rb|java|kt|swift|c|h|cc|cpp|hpp|md|txt|json|ya?ml|toml|sh|zsh|cfg|ini|html|css|sql)$", re.I)
+_FILELIKE = re.compile(r"^[\w.\-/]+\." + _PATH_EXT + r"$", re.I)
 
 # Ordered: first match wins, so the specific literal forms must precede the
 # generic file verbs.
@@ -90,6 +104,26 @@ _DONE_INLINE = re.compile(
     r"(?:that'?s|all)\s+(?:done|set|fixed)|task\s+complete[d]?)\b",
     re.I)
 
+# Someone else's work. "A concurrent agent rewrote manifest.json between the
+# runs" is a true sentence about a file, and it is not this session's claim.
+# Reading it as one made alibi accuse a session of something another agent did.
+#
+# Kept deliberately narrow. A first cut matched "a/an/the <agent|session|run>",
+# which also swallowed "I created writes.py to record what a session wrote" —
+# a purpose clause, not an attribution. Attributions in practice are specific
+# and comparative: another, concurrent, parallel, other, previous, earlier.
+_OTHER_ACTOR = re.compile(
+    r"\b(?:another|concurrent|parallel|competing|other|the\s+other|a\s+second)\s+"
+    r"(?:agent|assistant|worker|subagent|sub-agent|session|run|task|process)\b"
+    r"|\b(?:previous|earlier|prior|previous\s+runs?)\s+"
+    r"(?:run|session|pass|attempt)\b"
+    r"|\bin\s+an?\s+(?:earlier|previous|prior)\s+(?:run|session)\b"
+    r"|\b(?:before|prior\s+to)\s+the\s+(?:run|pass|attempt)\b"
+    r"|\bbetween\s+the\s+runs?\b"
+    # speculation about a past run, not a statement about this one
+    r"|\b(?:the\s+)?(?:likely\s+)?cause\s+(?:was|is|of)\b",
+    re.I)
+
 # Future / intent / plan. "Now let me write verify_all.sh" is not a claim that
 # anything was written, and treating it as one is the fastest way to turn a
 # verifier into a liar. Anything in here is dropped before any rule runs.
@@ -104,11 +138,25 @@ _SKIP_LINE = re.compile(r"^\s*(?:#{1,6}\s|[-*+]\s|\d+[.)]\s|\||>|\`\`\`)|^\s*$")
 
 
 def _split_sentences(text: str) -> list[str]:
-    flat = " ".join(text.split())
-    if not flat:
-        return []
-    parts = re.split(r"(?<=[.!?。！？])\s+|(?<=[\u4e00-\u9fff])[，、；](?=[^\s])", flat)
-    return [p.strip() for p in parts if p and p.strip()]
+    """Split into sentences without losing line structure.
+
+    Joining everything onto one line first sounds harmless and is not. A markdown
+    heading has no full stop, so "## What this PR does" absorbed the claim that
+    sat on the next line, and the heading filter then discarded both. `alibi
+    check` reads markdown, so that was the format it most needed to get right.
+    """
+    out: list[str] = []
+    for raw in text.splitlines():
+        line = re.sub(r"^#{1,6}\s*", "", raw.strip())
+        line = re.sub(r"^>\s?", "", line)
+        line = re.sub(r"^[-*+]\s+", "", line)
+        line = re.sub(r"^\d+[.)]\s+", "", line)
+        if not line.strip(" *_`-="):
+            continue
+        flat = " ".join(line.split())
+        parts = re.split(r"(?<=[.!?。！？])\s+|(?<=[\u4e00-\u9fff])[，、；](?=[^\s])", flat)
+        out.extend(p.strip() for p in parts if p and p.strip())
+    return out
 
 
 def _clean(value: str) -> str:
@@ -130,8 +178,8 @@ def extract(text: str) -> list[Claim]:
     for sentence in _split_sentences(text):
         if len(sentence) < 4 or _SKIP_LINE.match(sentence):
             continue
-        # Intent is not a claim. Drop it before any rule can fire.
-        if _INTENT.search(sentence):
+        # Intent is not a claim. Neither is somebody else's work.
+        if _INTENT.search(sentence) or _OTHER_ACTOR.search(sentence):
             continue
 
         matched_any = False
@@ -170,11 +218,20 @@ def extract(text: str) -> list[Claim]:
 
 
 def extract_session(session) -> list[Claim]:
-    """All claims across a session's assistant messages, in order."""
+    """All claims across a session, each stamped with its position in it.
+
+    The stamp is how many tool calls had already been made when the agent said
+    it. Pairing a claim with the nearest relevant command — rather than with the
+    session's last one — is what stops one test's result being handed to a claim
+    about a different test, which produced two of the first contradictions.
+    """
     claims: list[Claim] = []
-    for message in session.assistant_messages:
-        if not message.text:
+    commands_so_far = 0
+    for message in session.messages:
+        for call in message.tool_calls:
+            commands_so_far = max(commands_so_far, call.at)
+        if message.role != "assistant" or not message.text:
             continue
         for claim in extract(message.text):
-            claims.append(claim)
+            claims.append(replace(claim, at=commands_so_far))
     return claims

@@ -66,6 +66,9 @@ class ToolCall:
 
     name: str
     tool_input: dict = field(default_factory=dict)
+    # Order within the session, so a claim can be paired with the nearest
+    # relevant command instead of a session-wide "last one".
+    at: int = 0
     exit_code: Optional[int] = None
     output: str = ""
     # Structured, agent-authored success flag. Preferred over anything scraped

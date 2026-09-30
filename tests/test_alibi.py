@@ -27,7 +27,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from alibi.agents import available, load, locate_all, parse_session
+from alibi.agents import Message, available, load, locate_all, parse_session
 from alibi.claims import extract
 from alibi.groundtruth import collect
 from alibi.verify import CONTRADICTED, UNVERIFIED, VERIFIED, verify_all
@@ -278,7 +278,7 @@ class TestExitCodeClaims(Sandbox):
             commands=[("pytest tests/unit", "ok", 0), ("pytest tests/full", "FAILED", 1)],
         )
         self.assertEqual([f.verdict for f in findings], [CONTRADICTED])
-        self.assertIn("the last", findings[0].evidence)
+        self.assertIn("nearest", findings[0].evidence)
 
     def test_red_first_green_last_verifies(self):
         findings = self.check(
@@ -426,12 +426,43 @@ class TestUnverifiedIsNeverAPass(Sandbox):
         findings = self.check(["I refactored this for clarity."])
         self.assertEqual([f.verdict for f in findings], [UNVERIFIED])
 
-    def test_no_git_repository_makes_everything_unverified(self):
+    def test_no_git_repository_still_verifies_from_the_session_own_writes(self):
+        # A session in a home directory or scratch folder has no repository.
+        # Refusing to look there meant refusing to work where a lot of agent
+        # work happens — 124 of 258 real claims were in exactly that state.
         outside = Path(self.tmp.name) / "plain"
         outside.mkdir()
-        session = self.session(["I created `x.py`."], cwd=outside)
+        (outside / "made.py").write_text("x = 1\n")
+        session = self.session(
+            ["I created `made.py`."],
+            writes=[("Write", str(outside / "made.py"))],
+            cwd=outside,
+        )
         facts = collect(session.cwd)
-        findings = verify_all(extract("I created `x.py`."), facts, session)
+        self.assertFalse(facts.is_repo)
+        findings = verify_all(extract("I created `made.py`."), facts, session)
+        self.assertEqual([f.verdict for f in findings], [VERIFIED])
+        self.assertIn("filesystem evidence only", findings[0].evidence)
+
+    def test_no_git_repository_still_contradicts_a_missing_file(self):
+        outside = Path(self.tmp.name) / "plain"
+        outside.mkdir()
+        session = self.session(["I created `ghost.py`."], cwd=outside)
+        facts = collect(session.cwd)
+        findings = verify_all(extract("I created `ghost.py`."), facts, session)
+        self.assertEqual([f.verdict for f in findings], [CONTRADICTED])
+
+    def test_a_line_claim_without_git_is_unverified_because_there_is_no_diff(self):
+        outside = Path(self.tmp.name) / "plain"
+        outside.mkdir()
+        (outside / "conf.py").write_text("timeout = 30\n")
+        session = self.session(
+            ["I added the line `timeout = 30`."],
+            commands=[("cat > conf.py <<'EOF'\ntimeout = 30\nEOF", "", 0)],
+            cwd=outside,
+        )
+        facts = collect(session.cwd)
+        findings = verify_all(extract("I added the line `timeout = 30`."), facts, session)
         self.assertEqual([f.verdict for f in findings], [UNVERIFIED])
 
 
@@ -675,11 +706,12 @@ class TestNoThirdPartyImports(unittest.TestCase):
     def test_source_uses_only_the_standard_library(self):
         import ast
 
-        allowed = {
-            "argparse", "dataclasses", "datetime", "hashlib", "importlib", "json",
-            "os", "pathlib", "pkgutil", "re", "shutil", "subprocess", "sys",
-            "typing", "unittest", "__future__",
-        }
+        # sys.stdlib_module_names is authoritative per interpreter. A
+        # hand-kept allowlist rots: it missed `collections` the moment it was
+        # added, which is exactly the kind of check that stops being one.
+        import sys as _sys
+
+        allowed = set(_sys.stdlib_module_names) | {"__future__"}
         for path in (REPO_ROOT / "alibi").rglob("*.py"):
             tree = ast.parse(path.read_text())
             for node in ast.walk(tree):
@@ -700,3 +732,167 @@ class TestNoThirdPartyImports(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestDescriptionCheck(Sandbox):
+    """`alibi check` — a PR body or commit message against the diff itself."""
+
+    def _diff(self):
+        from alibi.desccheck import collect_diff
+
+        return collect_diff(str(self.repo))
+
+    def test_a_description_claiming_a_created_file_is_checked(self):
+        (self.repo / "new_module.py").write_text("X = 1\n")
+        from alibi.desccheck import verify_description
+
+        findings = verify_description("I created `new_module.py`.", self._diff())
+        self.assertEqual([f.verdict for f in findings], [VERIFIED])
+
+    def test_a_description_claiming_a_deletion_the_diff_does_not_make_is_contradicted(self):
+        from alibi.desccheck import verify_description
+
+        (self.repo / "existing.py").write_text("import os\nprint('hi')\nmore = 2\n")
+        findings = verify_description("I removed `existing.py`.", self._diff())
+        self.assertEqual([f.verdict for f in findings], [CONTRADICTED])
+
+    def test_a_description_claiming_a_literal_the_diff_never_adds_is_contradicted(self):
+        from alibi.desccheck import verify_description
+
+        (self.repo / "existing.py").write_text("timeout = 99\n")
+        findings = verify_description("Added the line `timeout = 30`.", self._diff())
+        self.assertEqual([f.verdict for f in findings], [CONTRADICTED])
+
+    def test_claims_passed_is_unverified_because_ci_owns_that_fact(self):
+        from alibi.desccheck import verify_description
+
+        (self.repo / "x.py").write_text("y = 1\n")
+        findings = verify_description("Tests pass.", self._diff())
+        self.assertEqual([f.verdict for f in findings], [UNVERIFIED])
+
+    def test_a_markdown_heading_does_not_swallow_the_claim_below_it(self):
+        # A heading has no full stop, so flattening the document onto one line
+        # merged the heading with the first claim and dropped both. This is the
+        # format `alibi check` exists to read, so it is not a corner case.
+        from alibi.desccheck import verify_description
+
+        (self.repo / "new_module.py").write_text("X = 1\n")
+        body = "## What this PR does\n\nI created `new_module.py`.\n"
+        findings = verify_description(body, self._diff())
+        self.assertEqual([f.verdict for f in findings], [VERIFIED])
+
+    def test_a_purpose_clause_is_not_read_as_someone_elses_work(self):
+        # "to record what a session wrote" is a reason, not an attribution. A
+        # broader filter swallowed this claim entirely.
+        from alibi.desccheck import verify_description
+
+        (self.repo / "writes.py").write_text("X = 1\n")
+        findings = verify_description(
+            "I created `writes.py` to record what a session wrote.", self._diff()
+        )
+        self.assertEqual([f.verdict for f in findings], [VERIFIED])
+
+    def test_an_untracked_new_file_is_visible_to_the_diff(self):
+        # git diff HEAD does not include untracked files, and a brand new source
+        # file is the single most common thing a PR adds.
+        from alibi.desccheck import collect_diff, verify_description
+
+        (self.repo / "brand_new.py").write_text("A = 1\n")
+        diff = collect_diff(str(self.repo))
+        self.assertIn("brand_new.py", diff.added_paths)
+        findings = verify_description("I created `brand_new.py`.", diff)
+        self.assertEqual([f.verdict for f in findings], [VERIFIED])
+
+    def test_no_diff_is_reported_rather_than_guessed(self):
+        from alibi.desccheck import collect_diff
+
+        plain = Path(self.tmp.name) / "plain"
+        plain.mkdir()
+        diff = collect_diff(str(plain))
+        self.assertFalse(diff.available)
+        self.assertIn("not a git repository", diff.reason)
+
+
+class TestClaimExtractorRegressions(unittest.TestCase):
+    """Every case here produced a real false verdict on real transcripts."""
+
+    def test_json_extension_is_not_truncated_to_js(self):
+        claims = extract("I created `verify.json` to log it.")
+        self.assertEqual(claims[0].target, "verify.json")
+
+    def test_html_extension_is_not_truncated_to_h(self):
+        claims = extract("I wrote `replay.html` for the report.")
+        self.assertEqual(claims[0].target, "replay.html")
+
+    def test_yaml_extension_is_not_truncated_to_yml_prefix(self):
+        claims = extract("I created `config.yaml` with the settings.")
+        self.assertEqual(claims[0].target, "config.yaml")
+
+    def test_work_by_a_concurrent_agent_is_not_this_session_s_claim(self):
+        self.assertEqual(extract("A concurrent agent rewrote `manifest.json` between the runs."), [])
+
+    def test_work_by_another_agent_is_not_this_session_s_claim(self):
+        self.assertEqual(extract("Another agent added `x.py`."), [])
+
+    def test_bare_list_item_claims_are_still_found(self):
+        self.assertEqual([c.kind for c in extract("- I created `parser.py`.")], ["file_created"])
+
+
+class TestAmbiguity(unittest.TestCase):
+    def test_two_claims_and_one_command_is_ambiguous(self):
+        """Two sentences, one script: which sentence was about that run?"""
+        import tempfile as tf
+
+        with tf.TemporaryDirectory() as td:
+            repo = Path(td) / "r"
+            repo.mkdir()
+            run("git", "init", "-q", cwd=repo)
+            run("git", "config", "user.email", "t@e.c", cwd=repo)
+            run("git", "config", "user.name", "t", cwd=repo)
+            (repo / "f.py").write_text("x = 1\n")
+            run("git", "add", "-A", cwd=repo)
+            run("git", "commit", "-qm", "i", cwd=repo)
+
+            path = Path(td) / "s.jsonl"
+            write_transcript(
+                path, str(repo),
+                ["All 5 sequential tests pass."],
+                [("python3 ws_test.py", "boom", 1)],
+            )
+            write_transcript.__doc__  # keep the helper referenced
+            session = parse_session("claude_code", path)
+            # a second, different claim in the same session
+            session.messages.append(Message(role="assistant", text="The browser-like test passed."))
+
+            from alibi.claims import extract_session
+            from alibi.groundtruth import collect as collect_ground
+            from alibi.verify import verify_all as run_verify
+
+            findings = run_verify(extract_session(session), collect_ground(str(repo)), session)
+            self.assertEqual([f.verdict for f in findings], [UNVERIFIED, UNVERIFIED])
+
+
+class TestClaimScopeGuards(Sandbox):
+    """Guards that stopped real false accusations, kept because they are subtle."""
+
+    def test_a_path_in_another_tree_is_unverified_not_contradicted(self):
+        # "I created `phase16-ux-desktop/app.py` in the true tree" — the prefix
+        # does not exist under the session's own directory, so the sentence is
+        # about somewhere alibi cannot see. `Path.resolve()` returns a path
+        # that does not exist, so this guard has to test existence.
+        (self.repo / "app.py").write_text("x = 1\n")
+        findings = self.check(["I created `other-tree/app.py`."],
+                              writes=[("Write", str(self.repo / "app.py"))])
+        self.assertEqual([f.verdict for f in findings], [UNVERIFIED])
+        self.assertIn("other tree", findings[0].evidence)
+
+    def test_speculation_about_a_past_run_is_not_a_claim_about_this_one(self):
+        self.assertEqual(extract("The likely cause: I deleted `a.json` before the run."), [])
+
+    def test_a_claim_about_a_container_is_unverified_not_contradicted(self):
+        (self.repo / "f.py").write_text("x = 1\n")
+        findings = self.check(
+            ["The new vision.py is now in the container."],
+            commands=[("docker cp vision.py c:/app/vision.py", "", 0)],
+        )
+        self.assertEqual([f.verdict for f in findings], [UNVERIFIED])

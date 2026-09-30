@@ -24,6 +24,8 @@ from pathlib import Path
 from . import __version__
 from .agents import Message, Session, ToolCall, available, locate_all, parse_session
 from .claims import extract_session
+from .desccheck import collect_diff, verify_description
+from .report_desc import render_description_json, render_description_receipt, render_description_terminal
 from .groundtruth import collect
 from .report import render_json, render_receipt, render_terminal
 from .verify import CONTRADICTED, tally, verify_all
@@ -112,6 +114,34 @@ def cmd_scan(args) -> int:
     return EXIT_CONTRADICTED if (contradicted and not args.no_fail) else EXIT_OK
 
 
+def cmd_check(args) -> int:
+    """Check a written description — a PR body, a commit message — against the diff."""
+    if args.file == "-":
+        text = sys.stdin.read()
+    else:
+        path = Path(args.file)
+        if not path.is_file():
+            print(f"alibi: no such file: {path}", file=sys.stderr)
+            return EXIT_CANNOT_RUN
+        text = path.read_text(errors="replace")
+
+    diff = collect_diff(str(Path(args.repo or ".").resolve()), args.base)
+    findings = verify_description(text, diff)
+
+    if args.json:
+        print(render_description_json(text, findings, diff))
+    elif args.receipt:
+        print(render_description_receipt(findings, diff))
+    else:
+        print(render_description_terminal(text, findings, diff, args.color))
+
+    contradicted = sum(1 for f in findings if f.verdict == CONTRADICTED)
+    if args.strict and not diff.available:
+        print(f"alibi: {diff.reason}", file=sys.stderr)
+        return EXIT_CANNOT_RUN
+    return EXIT_CONTRADICTED if (contradicted and not args.no_fail) else EXIT_OK
+
+
 def cmd_doctor(args) -> int:
     print("alibi doctor — which agents can alibi read right now\n")
     located = dict(locate_all(None, None))
@@ -166,6 +196,20 @@ def build_parser() -> argparse.ArgumentParser:
     scan.add_argument("--color", choices=["auto", "always", "never"], default="auto")
     scan.add_argument("--width", type=int, default=0)
     scan.set_defaults(func=cmd_scan)
+
+    check = sub.add_parser(
+        "check",
+        help="check a PR description or commit message against the actual diff",
+    )
+    check.add_argument("file", help="path to the description, or - for stdin")
+    check.add_argument("--repo", help="repository to compare against (default: cwd)")
+    check.add_argument("--base", help="git ref to diff against, e.g. main (default: uncommitted changes)")
+    check.add_argument("--json", action="store_true")
+    check.add_argument("--receipt", action="store_true")
+    check.add_argument("--no-fail", action="store_true")
+    check.add_argument("--strict", action="store_true", help="exit 2 when there is no diff to check")
+    check.add_argument("--color", choices=["auto", "always", "never"], default="auto")
+    check.set_defaults(func=cmd_check)
 
     doctor = sub.add_parser("doctor", help="show which agents alibi can read")
     doctor.set_defaults(func=cmd_doctor)

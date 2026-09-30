@@ -16,6 +16,7 @@ means "unknown", and unknown flows to UNVERIFIED — never to VERIFIED.
 
 from __future__ import annotations
 
+import os
 import re
 from pathlib import Path
 
@@ -136,3 +137,50 @@ def wrote(session, rel_path: str, writes: set[str] | None = None) -> bool:
     # tolerate ./ and trailing-slash differences on the caller's side
     alt = rel_path.lstrip("./")
     return alt in writes
+
+
+def resolve_claimed(session, claimed: str, writes: set[str] | None = None) -> tuple[str | None, str]:
+    """Match a path an agent named in prose against paths the session touched.
+
+    Agents say "I created `run_all.sh`" while working in a subdirectory, and
+    saying so plainly is normal — not deception. Resolving that against the
+    session's working directory alone turns four of twelve sampled claims into
+    false accusations, because the cwd was a parent of the real work.
+
+    So a claimed path is matched against what the session actually wrote:
+
+      1. exact match on the normalised relative path
+      2. unique match on the file name alone
+
+    Anything less than one of those is None. A guess is not a resolution, and
+    resolution is what a verdict is allowed to rest on.
+    """
+    if not claimed:
+        return None, "claim names no path"
+    writes = session_writes(session) if writes is None else writes
+    want = claimed.strip().lstrip("./")
+    if not want:
+        return None, "claim names no path"
+
+    if want in writes:
+        return want, "exact path match"
+
+    # A claim that names a directory is talking about a specific place. Falling
+    # back to a bare file-name match there would silently reinterpret
+    # "other-tree/app.py" as "app.py", and vouched for a write to a different
+    # path than the one the agent named.
+    if "/" in want:
+        return None, "the claim names a directory, and this session did not write that exact path"
+
+    basename = os.path.basename(want)
+    if not basename:
+        return None, "claim names no file"
+    same_name = sorted(w for w in writes if os.path.basename(w) == basename)
+    if len(same_name) == 1:
+        return same_name[0], "matched on file name; the session wrote exactly one file with that name"
+    if len(same_name) > 1:
+        return None, f"the session wrote {len(same_name)} files named {basename}; alibi cannot tell which one was meant"
+
+    # Not written by this session. It may still exist from earlier work, which
+    # is precisely the coincidence this tool must not mistake for evidence.
+    return None, "this session contains no write to a file with that name"

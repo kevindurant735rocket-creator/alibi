@@ -14,7 +14,18 @@ from pathlib import Path
 
 @dataclass
 class RepoFacts:
-    """A snapshot of one git working tree, taken once and reused by every rule."""
+    """A snapshot of the working tree a session ran in.
+
+    git is the strongest ground truth available, but it is not the only one. A
+    session that ran in a home directory or a scratch folder has no repository,
+    and 124 of 258 claims on real transcripts were in exactly that situation.
+    Refusing to look there would mean refusing to work where a lot of agent
+    work actually happens.
+
+    So a directory without git is still usable: existence and mtime are weaker
+    evidence than a diff, but they are evidence. What changes is which verdicts
+    are reachable, not whether the tool shows up at all.
+    """
 
     root: Path | None = None
     is_repo: bool = False
@@ -22,25 +33,28 @@ class RepoFacts:
     untracked: set[str] = field(default_factory=set)
     deleted: set[str] = field(default_factory=set)
     error: str = ""
+    # The directory the session ran in, whether or not it is a repository.
+    base: Path | None = None
 
     def abs(self, rel: str) -> Path | None:
-        """Resolve a path the agent mentioned, refusing to escape the repo.
+        """Resolve a path the agent mentioned, refusing to escape the base dir.
 
-        A claim about `../../etc/passwd` is not evidence about this repository,
+        A claim about `../../etc/passwd` is not evidence about this directory,
         so it resolves to None and the caller must report UNVERIFIED rather than
         reading a file the agent had no business touching.
         """
-        if self.root is None:
+        base = self.root or self.base
+        if base is None:
             return None
         if not rel or "\x00" in rel:
             return None
-        # A leading ~ is a home reference, not a path inside the repository.
+        # A leading ~ is a home reference, not a path inside the directory.
         # Left alone it would silently become a literal directory named "~".
         if rel.startswith("~"):
             return None
-        candidate = (self.root / rel).resolve()
         try:
-            candidate.relative_to(self.root.resolve())
+            candidate = (base / rel).resolve()
+            candidate.relative_to(base.resolve())
         except (ValueError, OSError):
             return None
         return candidate
@@ -108,7 +122,7 @@ def _git(args: list[str], cwd: Path) -> tuple[int, str, str]:
 
 
 def collect(cwd: str) -> RepoFacts:
-    """Read the git state of `cwd`. Never raises; failures land in `.error`."""
+    """Read the state of `cwd`. Never raises; failures land in `.error`."""
     facts = RepoFacts()
     if not cwd:
         facts.error = "session recorded no working directory"
@@ -118,9 +132,13 @@ def collect(cwd: str) -> RepoFacts:
         facts.error = f"working directory does not exist: {start}"
         return facts
 
+    facts.base = start.resolve()
+
     rc, out, err = _git(["rev-parse", "--show-toplevel"], start)
     if rc != 0:
-        facts.error = err.strip() or "not inside a git repository"
+        # No repository here. Not a dead end — a directory is still a place
+        # files live, and the session's own write records are still evidence.
+        facts.error = "no git repository here; falling back to filesystem evidence"
         return facts
     facts.is_repo = True
     facts.root = Path(out.strip()).resolve()
