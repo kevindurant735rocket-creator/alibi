@@ -537,12 +537,16 @@ class TestAdapterContract(unittest.TestCase):
     def test_malformed_lines_are_counted_not_swallowed(self):
         with tempfile.TemporaryDirectory() as td:
             path = Path(td) / "s.jsonl"
-            path.write_text(
-                '{"type":"assistant","cwd":"%s","message":{"role":"assistant",'
-                '"content":[{"type":"text","text":"Done."}]}}\n'
-                "this is not json\n"
-                "[1,2,3]\n" % td
-            )
+            # Built with json.dumps, not by string interpolation. A Windows temp
+            # path contains backslashes, and pasting one into hand-written JSON
+            # makes "\Users" an invalid escape — the line then fails to parse
+            # and the count comes out one too high, on Windows only.
+            good = json.dumps({
+                "type": "assistant", "cwd": td,
+                "message": {"role": "assistant",
+                            "content": [{"type": "text", "text": "Done."}]},
+            })
+            path.write_text(good + "\nthis is not json\n[1,2,3]\n")
             session = parse_session("claude_code", path)
             self.assertEqual(session.skipped_lines, 2)
             self.assertEqual(len(session.messages), 1)
@@ -555,6 +559,7 @@ class TestExitCodes(Sandbox):
         return subprocess.run(
             [sys.executable, "-m", "alibi", "scan", *extra],
             cwd=str(REPO_ROOT), capture_output=True, text=True, check=False,
+            errors="replace",
         )
 
     def _transcript(self, texts=(), commands=(), writes=()):
@@ -632,7 +637,8 @@ class TestExitCodes(Sandbox):
         try:
             proc = subprocess.run(
                 [sys.executable, "-m", "alibi", "doctor"],
-                cwd=str(REPO_ROOT), capture_output=True, text=True, check=False,
+                cwd=str(REPO_ROOT), capture_output=True, text=True,
+                errors="replace", check=False,
             )
             self.assertIn("BROKEN", proc.stderr)
         finally:
@@ -915,7 +921,7 @@ class TestConsoleEncoding(Sandbox):
         tf = write_transcript(td / "s.jsonl", str(self.repo), texts)
         return subprocess.run(
             [sys.executable, "-m", "alibi", "scan", "--transcript", str(tf), "--color", "never"],
-            cwd=str(REPO_ROOT), capture_output=True, text=True, env=env, check=False,
+            cwd=str(REPO_ROOT), capture_output=True, text=True, errors="replace", env=env, check=False,
         )
 
     def test_a_contradiction_still_fails_the_build_on_an_ascii_console(self):
