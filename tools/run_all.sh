@@ -15,6 +15,15 @@ command -v "$PY" >/dev/null 2>&1 || PY=python
 fail=0
 step() { printf '\n=== %s\n' "$1"; }
 
+# This script is a gate. A gate that cannot be parsed must say so, not exit 2
+# after printing "ALL CHECKS PASSED" — which is exactly what a mangled tail did
+# once, and it took a Windows CI run to notice.
+if ! bash -n "$ROOT/tools/run_all.sh" 2>/dev/null; then
+  echo "run_all.sh does not parse; refusing to report anything"
+  bash -n "$ROOT/tools/run_all.sh"
+  exit 2
+fi
+
 # Windows opens source files as cp1252, and this codebase carries CJK inside
 # regexes. A bare read_text() raises UnicodeDecodeError there, which cost two CI
 # runs. The rule is cheap to state and cheap to check.
@@ -131,14 +140,17 @@ MD
 if ( cd "$desc_probe/repo" && PYTHONPATH="$ROOT" "$PY" -m alibi check ../pr.md --color never >../out.txt 2>&1 ); then
   echo "FAIL: a description claiming a deletion the diff does not make should exit 1"
   fail=1
+elif grep -q "CONTRADICTED" "$desc_probe/out.txt"; then
+  echo "alibi check contradicted a false deletion claim and exited 1"
 else
-  grep -q "CONTRADICTED" "$desc_probe/out.txt" \
-    && echo "alibi check contradicted a false deletion claim and exited 1" \
-    || { echo "FAIL: alibi check did not contradict"; cat "$desc_probe/out.txt"; fail=1; }
+  echo "FAIL: alibi check did not contradict"
+  cat "$desc_probe/out.txt"
+  fail=1
 fi
-rm -rf "$desc_probe"
+find "$desc_probe" -mindepth 1 -delete && rmdir "$desc_probe"
 
-step "7/7 alibi check against a real diff"
+printf '\n'
+if [ "$fail" -eq 0 ]; then
   echo "ALL CHECKS PASSED"
 else
   echo "CHECKS FAILED"
