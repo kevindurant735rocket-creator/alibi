@@ -68,7 +68,7 @@ def parse(path: Path) -> Session:
     pending: dict[str, ToolCall] = {}
     order = 0
 
-    for line in Path(path).read_text(errors="replace").splitlines():
+    for line in Path(path).read_text(encoding="utf-8", errors="replace").splitlines():
         line = line.strip()
         if not line:
             continue

@@ -133,7 +133,7 @@ def collect_diff(cwd: str, base: str | None = None) -> DiffFacts:
         facts.files.add(rel)
         facts.added_paths.add(rel)
         try:
-            text = path.read_text(errors="replace")
+            text = path.read_text(encoding="utf-8", errors="replace")
         except OSError:
             continue
         facts.added_lines.update(line.strip() for line in text.splitlines()[:400])

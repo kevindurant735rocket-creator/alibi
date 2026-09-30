@@ -15,10 +15,22 @@ command -v "$PY" >/dev/null 2>&1 || PY=python
 fail=0
 step() { printf '\n=== %s\n' "$1"; }
 
-step "1/6 unit tests"
+# Windows opens source files as cp1252, and this codebase carries CJK inside
+# regexes. A bare read_text() raises UnicodeDecodeError there, which cost two CI
+# runs. The rule is cheap to state and cheap to check.
+unencoded=$(grep -rn "read_text()" alibi/ tests/ --include='*.py' | grep -v "encoding=" || true)
+if [ -n "$unencoded" ]; then
+  echo "FAIL: read a file without naming its encoding:"
+  echo "$unencoded"
+  fail=1
+else
+  echo "every read_text() names an encoding"
+fi
+
+step "1/7 unit tests"
 "$PY" -m unittest discover -s tests 2>&1 | tail -4
 
-step "2/6 standard library only"
+step "2/7 standard library only"
 if "$PY" - <<'PY'
 import sys, pathlib
 # sys.stdlib_module_names is authoritative per interpreter, so this check does
@@ -26,7 +38,7 @@ import sys, pathlib
 stdlib = set(sys.stdlib_module_names) | {"__future__"}
 bad = []
 for path in pathlib.Path("alibi").rglob("*.py"):
-    for lineno, line in enumerate(path.read_text().splitlines(), 1):
+    for lineno, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
         line = line.strip()
         if not (line.startswith("import ") or line.startswith("from ")):
             continue
@@ -45,7 +57,7 @@ print(f"all imports are standard library (python {sys.version.split()[0]})")
 PY
 then :; else fail=1; fi
 
-step "3/6 no network calls in source"
+step "3/7 no network calls in source"
 if grep -rnE '\b(urllib\.request|http\.client|socket|requests|urlopen|fetch\()' alibi/ --include='*.py'; then
   echo "FAIL: source contains a network call; alibi must work offline"
   fail=1
@@ -53,7 +65,7 @@ else
   echo "no network primitives found in alibi/"
 fi
 
-step "4/6 demo transcript"
+step "4/7 every file read names its encoding"
 # Not `demo.sh | grep -q …`: under pipefail, grep -q closes the pipe on its
 # first match, the demo dies of SIGPIPE, and the pipeline reports 141 — a
 # failure that looks exactly like a missing catch.
@@ -67,7 +79,7 @@ else
   fail=1
 fi
 
-step "5/6 CLI surface"
+step "5/7 demo transcript"
 "$PY" -m alibi --version
 "$PY" -m alibi doctor >/dev/null && echo "doctor ok"
 "$PY" -m alibi scan --help >/dev/null && echo "scan --help ok"
@@ -104,7 +116,7 @@ else
   echo "a directory-shaped path is handled, no traceback (exit $crash_rc)"
 fi
 
-step "6/6 alibi check against a real diff"
+step "6/7 CLI surface"
 desc_probe=$(mktemp -d)
 mkdir -p "$desc_probe/repo"
 ( cd "$desc_probe/repo" && git init -q \
@@ -126,8 +138,7 @@ else
 fi
 rm -rf "$desc_probe"
 
-printf '\n'
-if [ "$fail" -eq 0 ]; then
+step "7/7 alibi check against a real diff"
   echo "ALL CHECKS PASSED"
 else
   echo "CHECKS FAILED"

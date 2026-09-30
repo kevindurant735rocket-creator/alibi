@@ -720,7 +720,7 @@ class TestNoThirdPartyImports(unittest.TestCase):
 
         allowed = set(_sys.stdlib_module_names) | {"__future__"}
         for path in (REPO_ROOT / "alibi").rglob("*.py"):
-            tree = ast.parse(path.read_text())
+            tree = ast.parse(path.read_text(encoding="utf-8"))
             for node in ast.walk(tree):
                 if isinstance(node, ast.Import):
                     for alias in node.names:
@@ -732,7 +732,7 @@ class TestNoThirdPartyImports(unittest.TestCase):
                     self.assertIn((node.module or "").split(".")[0], allowed,
                                   f"{path.name} imports from {node.module}")
             # __import__("re") is an import that hides from a line-based scan.
-            for i, line in enumerate(path.read_text().splitlines(), 1):
+            for i, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
                 if "__import__" in line:
                     self.fail(f"{path.name}:{i} uses __import__ instead of a top-level import")
 

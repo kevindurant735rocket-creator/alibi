@@ -138,7 +138,7 @@ def cmd_check(args) -> int:
         if not path.is_file():
             print(f"alibi: no such file: {path}", file=sys.stderr)
             return EXIT_CANNOT_RUN
-        text = path.read_text(errors="replace")
+        text = path.read_text(encoding="utf-8", errors="replace")
 
     diff = collect_diff(str(Path(args.repo or ".").resolve()), args.base)
     findings = verify_description(text, diff)

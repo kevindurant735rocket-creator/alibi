@@ -64,7 +64,7 @@ def parse(path: Path) -> Session:
     order = 0
     first_ts = last_ts = ""
 
-    for line in Path(path).read_text(errors="replace").splitlines():
+    for line in Path(path).read_text(encoding="utf-8", errors="replace").splitlines():
         line = line.strip()
         if not line:
             continue

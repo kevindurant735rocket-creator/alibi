@@ -68,7 +68,7 @@ class RepoFacts:
         if not p or not p.is_file():
             return None
         try:
-            return p.read_text(errors="replace")
+            return p.read_text(encoding="utf-8", errors="replace")
         except OSError:
             return None
 
