@@ -817,7 +817,10 @@ class TestDescriptionCheck(Sandbox):
         plain.mkdir()
         diff = collect_diff(str(plain))
         self.assertFalse(diff.available)
-        self.assertIn("not a git repository", diff.reason)
+        # The old assertion pinned git's own words, which named neither the
+        # directory tried nor the flag that fixes it.
+        self.assertIn("is not inside a git repository", diff.reason)
+        self.assertIn("--repo", diff.reason)
 
 
 class TestClaimExtractorRegressions(unittest.TestCase):
@@ -982,3 +985,38 @@ class TestDiffRange(Sandbox):
 
         diff = collect_diff(str(self.repo), "HEAD", "HEAD")
         self.assertFalse(diff.available)
+
+
+class TestActionableFailures(unittest.TestCase):
+    """A failure the user cannot act on is indistinguishable from no result.
+
+    `alibi check` outside a git repository printed git's own words — "fatal:
+    not a git repository" — which names neither the directory it tried nor the
+    flag that would fix it. The run then reads like an audit that found nothing
+    worth saying.
+    """
+
+    def _check_outside_a_repo(self):
+        import os
+        import tempfile as tf
+
+        with tf.TemporaryDirectory() as td:
+            desc = Path(td) / "description.md"
+            desc.write_text("I created `a.py`.\n", encoding="utf-8")
+            return subprocess.run(
+                [sys.executable, "-m", "alibi", "check", str(desc), "--color", "never"],
+                cwd=td, capture_output=True, text=True, errors="replace", check=False,
+                env={**os.environ, "PYTHONPATH": str(REPO_ROOT)},
+            )
+
+    def test_it_names_the_directory_it_tried(self):
+        proc = self._check_outside_a_repo()
+        self.assertIn("is not inside a git repository", proc.stdout)
+
+    def test_it_names_the_flag_that_fixes_it(self):
+        proc = self._check_outside_a_repo()
+        self.assertIn("--repo", proc.stdout)
+
+    def test_it_does_not_pass_git_raw_words_through(self):
+        proc = self._check_outside_a_repo()
+        self.assertNotIn("fatal: not a git repository", proc.stdout)

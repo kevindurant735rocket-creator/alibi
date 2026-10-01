@@ -120,7 +120,14 @@ def collect_diff(cwd: str, base: str | None = None, head: str | None = None) -> 
 
     rc, root, err = _git(["rev-parse", "--show-toplevel"], start)
     if rc != 0:
-        facts.reason = err.strip() or "not a git repository"
+        # git's own words ("fatal: not a git repository") tell a user nothing
+        # they can act on. Say which directory was tried and which flag fixes
+        # it: a verifier that fails in a way the user cannot act on is
+        # indistinguishable from one that simply has nothing to report.
+        facts.reason = (
+            f"{start} is not inside a git repository — if it lives elsewhere, "
+            f"re-run with --repo <path>"
+        )
         return facts
     facts.root = Path(root.strip()).resolve()
 
