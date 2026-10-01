@@ -140,7 +140,7 @@ def cmd_check(args) -> int:
             return EXIT_CANNOT_RUN
         text = path.read_text(encoding="utf-8", errors="replace")
 
-    diff = collect_diff(str(Path(args.repo or ".").resolve()), args.base)
+    diff = collect_diff(str(Path(args.repo or ".").resolve()), args.base, args.head)
     findings = verify_description(text, diff)
 
     if args.json:
@@ -218,7 +218,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     check.add_argument("file", help="path to the description, or - for stdin")
     check.add_argument("--repo", help="repository to compare against (default: cwd)")
-    check.add_argument("--base", help="git ref to diff against, e.g. main (default: uncommitted changes)")
+    check.add_argument("--base", help="git ref to diff against, e.g. main or a SHA (default: uncommitted changes)")
+    check.add_argument("--head", help="the other end of the comparison, e.g. a SHA (default: the working tree with --base)")
     check.add_argument("--json", action="store_true")
     check.add_argument("--receipt", action="store_true")
     check.add_argument("--no-fail", action="store_true")

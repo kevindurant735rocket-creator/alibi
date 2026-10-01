@@ -935,3 +935,50 @@ class TestConsoleEncoding(Sandbox):
         proc = self._scan("ascii", ["I created `ghost.py`."])
         self.assertNotIn("✓", proc.stdout)
         self.assertIn("CONTRADICTED", proc.stdout)
+
+
+class TestDiffRange(Sandbox):
+    """`--base` has to name two real trees.
+
+    The first implementation built `git diff base...HEAD`, which is the merge-base
+    form: correct for a branch name, and silently meaningless for a commit. Given
+    a SHA it measured nothing, every claim came back unverified, and the tool
+    reported agreement it had not found. A verifier that cannot tell the
+    difference between "nothing is wrong" and "I looked at nothing" is the one
+    failure mode this project cannot have.
+    """
+
+    def _commit(self, message: str, filename: str, content: str) -> str:
+        (self.repo / filename).write_text(content, encoding="utf-8")
+        run("git", "add", "-A", cwd=self.repo)
+        run("git", "commit", "-qm", message, cwd=self.repo)
+        return run("git", "rev-parse", "HEAD", cwd=self.repo).stdout.strip()
+
+    def test_a_base_that_is_a_commit_still_produces_its_diff(self):
+        from alibi.desccheck import collect_diff, verify_description
+
+        before = run("git", "rev-parse", "HEAD", cwd=self.repo).stdout.strip()
+        sha = self._commit("adds a file", "made.py", "X = 1\n")
+        diff = collect_diff(str(self.repo), f"{sha}~1", sha)
+        self.assertTrue(diff.available, "a real commit range produced no diff")
+        self.assertIn("made.py", diff.added_paths)
+        findings = verify_description("I created `made.py`.", diff)
+        self.assertEqual([f.verdict for f in findings], [VERIFIED])
+
+    def test_the_report_says_which_two_trees_it_compared(self):
+        from alibi.desccheck import collect_diff
+        from alibi.report_desc import render_description_terminal
+
+        sha = self._commit("adds a file", "made.py", "X = 1\n")
+        diff = collect_diff(str(self.repo), f"{sha}~1", sha)
+        self.assertEqual(diff.base, f"{sha}~1")
+        self.assertEqual(diff.head, sha)
+        text = render_description_terminal("I created `made.py`.", [], diff, color="never")
+        self.assertIn(sha[:7], text)
+        self.assertNotIn("uncommitted", text)
+
+    def test_a_range_with_nothing_in_it_is_reported_as_unavailable(self):
+        from alibi.desccheck import collect_diff
+
+        diff = collect_diff(str(self.repo), "HEAD", "HEAD")
+        self.assertFalse(diff.available)

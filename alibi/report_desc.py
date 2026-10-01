@@ -59,7 +59,7 @@ def _truncate(text: str, width: int) -> str:
 def _headline(diff, color: bool) -> list[str]:
     if not diff.available:
         return [f"  {_DIM if color else ''}nothing to check: {diff.reason}{_RESET if color else ''}", ""]
-    scope = "uncommitted changes" if True else ""
+    scope = f"comparing {diff.base} to {diff.head}" if diff.base else "uncommitted changes"
     return [
         f"  diff: {len(diff.files)} file(s), {len(diff.added_lines)} line(s) added, "
         f"{len(diff.removed_lines)} removed  {scope}"

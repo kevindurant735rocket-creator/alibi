@@ -51,3 +51,22 @@ evidence about how often agent descriptions are wrong. The honest number for
 that is in the README, and it is smaller than you would hope: over 736 real
 agent sessions, `alibi scan` found 288 completion claims and contradicted none
 of them, because 273 named no path, literal or command that could be checked.
+
+## Two more, found by running the tool on its own repository
+
+Both were found by pointing `alibi check` at this project's own commit messages
+and watching it report success.
+
+**`--base <sha>` measured nothing.** The implementation built
+`git diff base...HEAD`, which is the merge-base form. That is right for a
+branch name and silently meaningless for a commit: given a SHA it compared the
+merge base of a commit with HEAD, produced an empty diff, and returned
+UNVERIFIED for every claim — that is, *agreement it had not found*. The
+two-dot form (`git diff a..b`) says what it means: these two trees, against each
+other. A verifier that cannot tell "nothing is wrong" from "I looked at
+nothing" has the one failure mode this project cannot have.
+
+**The header lied.** The diff summary printed "uncommitted changes"
+unconditionally — a hardcoded string that was true for exactly one of the three
+ways `alibi check` can read a diff. It now names the two trees it compared.
+

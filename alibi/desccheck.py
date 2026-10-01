@@ -47,6 +47,9 @@ class DiffFacts:
     added_lines: set[str] = field(default_factory=set)
     removed_lines: set[str] = field(default_factory=set)
     files: set[str] = field(default_factory=set)
+    # What the diff compares, so the report can say it instead of guessing.
+    base: str = ""
+    head: str = ""
 
 
 def _git(args: list[str], cwd: Path) -> tuple[int, str, str]:
@@ -92,13 +95,19 @@ def _parse_diff(raw: str, facts: DiffFacts) -> None:
             facts.removed_lines.add(line[1:].strip())
 
 
-def collect_diff(cwd: str, base: str | None = None) -> DiffFacts:
-    """Read the pending diff: `git diff base...HEAD` when a base is given, else the working tree.
+def collect_diff(cwd: str, base: str | None = None, head: str | None = None) -> DiffFacts:
+    """Read a diff: `<base>..<head>` when a base is given, else the working tree.
 
     Untracked files are handled explicitly. `git diff HEAD` does not include
     them, so a brand-new source file — the single most common thing a PR adds —
     would have looked absent, and alibi would have contradicted a description
     for saying it created it.
+
+    The two-dot form is deliberate. `git diff base...HEAD` compares the merge
+    base of `base` with `HEAD`, which is right for a branch name and quietly
+    wrong for a commit: passing a SHA measured nothing at all, so every claim
+    came back unverified and the tool reported agreement it had not found.
+    Two dots says exactly what it means — these two trees, against each other.
     """
     facts = DiffFacts()
     if not cwd:
@@ -115,7 +124,12 @@ def collect_diff(cwd: str, base: str | None = None) -> DiffFacts:
         return facts
     facts.root = Path(root.strip()).resolve()
 
-    args = ["diff", "-U0", f"{base}...HEAD"] if base else ["diff", "-U0", "HEAD"]
+    if base:
+        args = ["diff", "-U0", f"{base}..{head}" if head else base]
+        facts.base, facts.head = base, head or "the working tree"
+    else:
+        args = ["diff", "-U0", "HEAD"]
+        facts.base, facts.head = "", "HEAD"
     rc, out, err = _git(args, facts.root)
     if rc != 0:
         facts.reason = err.strip() or "git diff failed"
