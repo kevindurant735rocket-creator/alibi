@@ -280,3 +280,5 @@ developer's machine: 15 of 288.
 ## License
 
 MIT. See [LICENSE](LICENSE).
+
+<!-- action smoke test -->
