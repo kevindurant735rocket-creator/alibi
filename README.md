@@ -137,35 +137,50 @@ Read this before you trust it.
   diff. It writes nothing and changes nothing.
 - **alibi is not an agent hook.** It runs on things that already exist.
 
-## Measured, on 736 real agent sessions
+## Measured, on ~700 real agent sessions
 
-`alibi scan` over every session on one developer's machine — 154 Claude Code
-transcripts and 702 Codex rollouts:
+`alibi scan` over every session on one developer's machine, Claude Code and
+Codex together:
 
 | | count |
 |---|---|
-| sessions audited | 736 |
-| transcripts alibi could not read | 122 |
-| completion claims found | 288 |
+| sessions audited | ~700 |
+| transcripts alibi could not read | ~120 |
+| completion claims found | ~290 |
 | **verified** | 15 |
 | **contradicted** | **0** |
-| **unverified** | 273 |
+| **unverified** | ~275 |
 
-**Read that before you get excited. On real agent sessions alibi contradicts
-nothing.** That is the honest number, and the reason is more useful than the
-number would have been:
+Those are the numbers as of 2026-09-30, and only the middle two are stable.
+The rest drift: agent transcript directories and `~/.zcode/cli/rollout` get
+rotated, so the same command on the same machine gives a slightly different
+count a week later. They are written as ~n rather than as a figure to trust.
+Get your own in one line:
 
-| why the other 273 are unverifiable | count |
+```console
+$ alibi scan --json | python3 -c "import json,sys; print(json.load(sys.stdin)['summary'])"
+```
+
+The 120 unreadable transcripts were diagnosed rather than assumed lost: every
+one of them is a session that contains slash commands and no assistant turn —
+`/clear` and nothing else. There is nothing in them to check, so the count is
+real rather than a bug.
+
+**Read the table before you get excited. On real agent sessions alibi
+contradicts nothing.** That is the honest number, and the reason is more useful
+than the number would have been:
+
+| why the rest are unverifiable | roughly |
 |---|---|
-| the claim names no path, literal or command | 104 |
-| no command in the session has a readable exit code | 81 |
-| the diff does not contain that line | 48 |
-| the command was piped, so its status is the pipe's | 13 |
-| several claims and several commands, none distinguishable | 10 |
-| the path refers to a tree outside the session's directory | 2 |
+| the claim names no path, literal or command | ~105 |
+| no command in the session has a readable exit code | ~80 |
+| the diff does not contain that line | ~48 |
+| the command was piped, so its status is the pipe's | ~13 |
+| several claims and several commands, none distinguishable | ~10 |
+| the path refers to a tree outside the session's directory | ~2 |
 
-The transcripts that would let alibi accuse are the ones where the agent ran an
-unchained command, recorded its status, and worked in a repository. That is
+The transcripts that would let alibi accuse are the ones where the agent ran
+an unchained command, recorded its status, and worked in a repository. That is
 rarer than the volume of confident summaries suggests.
 
 **That is exactly why `check` is the primary command.** A diff is always there,
@@ -192,6 +207,37 @@ one was correct.** Every fix below has a regression test named after it.
 
 For a verification tool, the red rows are the product. **The day alibi hides
 them is the day you should stop trusting the green ones.**
+
+## On every pull request
+
+The action is the shortest path from "I should check this" to "it is checked".
+Add this to `.github/workflows/claims.yml` in the repo you want watched:
+
+```yaml
+- uses: kevindurant735rocket-creator/alibi@v0.3.0
+  if: always()                       # so a red build still explains itself
+  with:
+    fail-on-contradiction: 'true'    # the default
+```
+
+It reads the pull request body, diffs it against the base ref, and posts the
+verdict back on the pull request. One contradicted claim turns the check red;
+so does having no diff to check at all, because a check that silently examined
+nothing is the failure mode this tool exists to prevent.
+
+| input | default | what it does |
+|---|---|---|
+| `description-path` | `auto` | text to check; `auto` reads the PR body, `-` reads stdin |
+| `base` | `auto` | the ref the diff starts from; defaults to the PR base |
+| `comment` | `true` | post the verdict as a PR comment (needs `pull-requests: write`) |
+| `fail-on-contradiction` | `true` | fail the job when a claim is contradicted |
+| `fail-on-nothing-to-check` | `true` | fail the job when there was no diff to examine |
+
+Or run it by hand on any text:
+
+```console
+git log -1 --format=%B | alibi check -
+```
 
 ## Adding an agent
 

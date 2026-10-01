@@ -161,7 +161,13 @@ def collect_diff(cwd: str, base: str | None = None, head: str | None = None) -> 
 
     facts.available = bool(facts.files or facts.added_lines or facts.removed_lines)
     if not facts.available:
-        facts.reason = "the working tree has no changes to check against"
+        # Say which range came back empty. Naming the working tree when the
+        # caller asked for main..HEAD is the same kind of small lie as the
+        # header that always said "uncommitted changes".
+        facts.reason = (
+            f"nothing differs between {facts.base} and {facts.head}, so there is no diff to check"
+            if facts.base else "the working tree has no changes to check against"
+        )
     return facts
 
 

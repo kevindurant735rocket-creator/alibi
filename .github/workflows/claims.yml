@@ -1,0 +1,26 @@
+# alibi, watching alibi. A verification tool that nobody points at itself is
+# asking to be trusted on the strength of its own README.
+name: claims
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, edited]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  check:
+    name: the description matches the diff
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: kevindurant735rocket-creator/alibi@v0.3.0
+        if: always()
+        with:
+          fail-on-contradiction: 'true'
+          fail-on-nothing-to-check: 'false'

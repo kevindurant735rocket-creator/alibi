@@ -1020,3 +1020,34 @@ class TestActionableFailures(unittest.TestCase):
     def test_it_does_not_pass_git_raw_words_through(self):
         proc = self._check_outside_a_repo()
         self.assertNotIn("fatal: not a git repository", proc.stdout)
+
+
+class TestEmptyDiffIsNamed(unittest.TestCase):
+    """An empty diff must say which range was empty.
+
+    `git diff main..main` finding nothing used to be reported as "the working
+    tree has no changes" — naming a tree the caller never asked about. The same
+    class of small lie as the header that always said "uncommitted changes".
+    """
+
+    def _repo_with_a_commit(self):
+        import tempfile as tf
+        td = tf.mkdtemp()
+        repo = Path(td) / "r"
+        repo.mkdir()
+        run("git", "init", "-q", cwd=repo)
+        run("git", "config", "user.email", "t@e.c", cwd=repo)
+        run("git", "config", "user.name", "t", cwd=repo)
+        (repo / "f.py").write_text("x = 1\n", encoding="utf-8")
+        run("git", "add", "-A", cwd=repo)
+        run("git", "commit", "-qm", "init", cwd=repo)
+        return repo
+
+    def test_a_range_with_nothing_in_it_names_the_range(self):
+        from alibi.desccheck import collect_diff
+
+        repo = self._repo_with_a_commit()
+        diff = collect_diff(str(repo), "HEAD", "HEAD")
+        self.assertFalse(diff.available)
+        self.assertIn("HEAD", diff.reason)
+        self.assertNotIn("working tree", diff.reason)

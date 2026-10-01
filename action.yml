@@ -1,0 +1,179 @@
+name: 'alibi'
+description: >-
+  Check a pull request description against the actual diff, and post the
+  verdict on the pull request. No model, no account, no network.
+author: 'kevindurant735rocket-creator'
+branding:
+  icon: 'check-circle'
+  color: 'green'
+
+inputs:
+  description-path:
+    description: >-
+      Path to the text to check — a PR template, a body file, or "-" to read
+      the pull request body from stdin. Auto-detected when omitted.
+    required: false
+    default: 'auto'
+  base:
+    description: 'The ref the diff starts from. Defaults to the pull request base ref; on a non-PR event, set it explicitly.'
+    required: false
+    default: 'auto'
+  comment:
+    description: 'Post the verdict as a pull request comment. Needs pull-requests: write.'
+    required: false
+    default: 'true'
+  fail-on-contradiction:
+    description: 'Fail the job when a claim is contradicted.'
+    required: false
+    default: 'true'
+  fail-on-nothing-to-check:
+    description: 'Fail the job when there was no diff to check against.'
+    required: false
+    default: 'true'
+
+outputs:
+  verified:
+    description: 'Claims the diff confirms.'
+  contradicted:
+    description: 'Claims the diff contradicts.'
+  unverified:
+    description: 'Claims alibi could not settle — not a pass.'
+
+runs:
+  using: 'composite'
+  steps:
+    # alibi is a pure-standard-library package, so there is nothing to build.
+    # The action's own checkout is importable, which is why this works before
+    # anyone has published it to a package index.
+    - name: Resolve what to check
+      id: resolve
+      shell: bash
+      env:
+        DESCRIPTION_PATH: ${{ inputs.description-path }}
+        BASE: ${{ inputs.base }}
+        SERVER: ${{ github.server_url }}
+        REPO: ${{ github.repository }}
+        PR_NUMBER: ${{ github.event.pull_request.number }}
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        set -euo pipefail
+        cd "$GITHUB_WORKSPACE"
+        git fetch --no-tags --depth=1 origin "${{ github.base_ref }}"
+
+        if [ "$BASE" = "auto" ]; then
+          base="origin/${{ github.base_ref }}"
+        else
+          base="$BASE"
+        fi
+        echo "base=$base" >> "$GITHUB_OUTPUT"
+
+        desc=""
+        if [ "$DESCRIPTION_PATH" != "auto" ] && [ "$DESCRIPTION_PATH" != "-" ]; then
+          if [ ! -f "$DESCRIPTION_PATH" ]; then
+            echo "::error::description-path '$DESCRIPTION_PATH' does not exist"
+            exit 1
+          fi
+          desc="$DESCRIPTION_PATH"
+        elif [ -n "${PR_NUMBER:-}" ] && [ -n "${GH_TOKEN:-}" ]; then
+          # The PR body is the thing being checked, so read it rather than
+          # guessing which file holds it.
+          body=$(gh api "repos/$REPO/pulls/$PR_NUMBER" --jq .body 2>/dev/null || true)
+          if [ -n "$body" ]; then
+            printf '%s\n' "$body" > "$RUNNER_TEMP/alibi-description.md"
+            desc="$RUNNER_TEMP/alibi-description.md"
+            echo "read the pull request body ($SERVER/$REPO/pull/$PR_NUMBER)"
+          fi
+        fi
+
+        if [ -z "$desc" ]; then
+          echo "::error::nothing to check. Pass description-path, or run this on a pull request so the body can be read."
+          exit 1
+        fi
+        echo "description=$desc" >> "$GITHUB_OUTPUT"
+
+    - name: Check the description against the diff
+      id: check
+      shell: bash
+      env:
+        DESC: ${{ steps.resolve.outputs.description }}
+        BASE: ${{ steps.resolve.outputs.base }}
+      run: |
+        set -uo pipefail
+        set +e
+        PYTHONPATH="$GITHUB_ACTION_PATH" python3 -m alibi check "$DESC" \
+          --base "$BASE" --head HEAD --json --no-fail > "$RUNNER_TEMP/alibi.json"
+        RC=$?
+        set -e
+        if [ "$RC" -ne 0 ]; then
+          echo "::error::alibi could not run (exit $RC)"
+          cat "$RUNNER_TEMP/alibi.json" || true
+          exit 1
+        fi
+        python3 - <<'PY'
+        import json, os
+        doc = json.load(open(os.environ["RUNNER_TEMP"] + "/alibi.json", encoding="utf-8"))
+        summary = doc["summary"]
+        for key in ("VERIFIED", "CONTRADICTED", "UNVERIFIED"):
+            print(f"{key.lower()}={summary[key]}", file=open(os.environ["GITHUB_OUTPUT"], "a"))
+        if not doc["diff"]["available"]:
+            print("::error::no diff to check against — " + doc["diff"].get("reason", ""))
+        print(f"checked {summary['claims']} claim(s) against {len(doc['diff']['files'])} changed file(s)")
+        PY
+
+    - name: Write the receipt
+      shell: bash
+      env:
+        DESC: ${{ steps.resolve.outputs.description }}
+        BASE: ${{ steps.resolve.outputs.base }}
+      run: |
+        set -euo pipefail
+        PYTHONPATH="$GITHUB_ACTION_PATH" python3 -m alibi check "$DESC" \
+          --base "$BASE" --head HEAD --receipt --no-fail > "$RUNNER_TEMP/alibi-receipt.md"
+        cp "$RUNNER_TEMP/alibi-receipt.md" "$GITHUB_STEP_SUMMARY"
+        bytes=$(wc -c < "$RUNNER_TEMP/alibi-receipt.md" | tr -d ' ')
+        if [ "$bytes" -gt 60000 ]; then
+          echo "::error::receipt is $bytes bytes, too large for a comment"
+          exit 1
+        fi
+
+    - name: Post the verdict comment
+      if: inputs.comment == 'true' && github.event_name == 'pull_request'
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+        PR_NUMBER: ${{ github.event.pull_request.number }}
+        SERVER: ${{ github.server_url }}
+        REPO: ${{ github.repository }}
+        REPO_URL: ${{ github.server_url }}/${{ github.repository }}
+      run: |
+        set -euo pipefail
+        body=$(cat "$RUNNER_TEMP/alibi-receipt.md")
+        gh api "repos/$REPO/issues/$PR_NUMBER/comments" \
+          --method POST --field body="$body" > /dev/null
+        echo "posted to $REPO_URL/pull/$PR_NUMBER"
+
+    - name: Fail on a contradicted claim
+      if: inputs.fail-on-contradiction == 'true'
+      shell: bash
+      env:
+        N: ${{ steps.check.outputs.contradicted }}
+      run: |
+        set -euo pipefail
+        if [ "${N:-0}" -gt 0 ]; then
+          echo "::error::$N claim(s) in this description are contradicted by the diff"
+          exit 1
+        fi
+        echo "no claim was contradicted"
+
+    - name: Fail when there was nothing to check
+      if: inputs.fail-on-nothing-to-check == 'true'
+      shell: bash
+      run: |
+        set -euo pipefail
+        python3 - <<'PY'
+        import json, os, sys
+        doc = json.load(open(os.environ["RUNNER_TEMP"] + "/alibi.json", encoding="utf-8"))
+        if not doc["diff"]["available"]:
+            print("::error::nothing was checked: " + doc["diff"].get("reason", ""))
+            sys.exit(1)
+        PY
